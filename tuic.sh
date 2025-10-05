@@ -4,16 +4,7 @@ set -euo pipefail
 IFS=$'\n\t'
 
 MASQ_DOMAINS=(
-  "www.microsoft.com"
-  "www.cloudflare.com"
   "www.bing.com"
-  "www.apple.com"
-  "www.amazon.com"
-  "www.wikipedia.org"
-  "cdnjs.cloudflare.com"
-  "cdn.jsdelivr.net"
-  "static.cloudflareinsights.com"
-  "www.speedtest.net"
 )
 MASQ_DOMAIN=${MASQ_DOMAINS[$RANDOM % ${#MASQ_DOMAINS[@]}]}
 
@@ -201,3 +192,4 @@ main() {
 }
 
 main "$@"
+
