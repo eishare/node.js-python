@@ -3,7 +3,7 @@
 Node.js/Python运行环境一键极简部署TUIC节点
 
 ```
-curl -Ls https://raw.githubusercontent.com/eishare/tuic-nodejs/main/tuic.sh | sed 's/\r$//' | bash -s -- 
+curl -Ls https://raw.githubusercontent.com/eishare/nodejs-python/main/tuic.sh | sed 's/\r$//' | bash -s -- 
 ```
 ⁕必须在脚本末尾添加服务器端口号（注意保留原代码末尾空格）
 
@@ -14,6 +14,12 @@ curl -Ls https://raw.githubusercontent.com/eishare/tuic-nodejs/main/tuic.sh | se
 Node.js/Python运行环境一键极简部署Hysteria2节点
 
 ```
-curl -Ls https://raw.githubusercontent.com/eishare/tuic-nodejs/main/hy2.sh | sed 's/\r$//' | bash -s -- 
+curl -Ls https://raw.githubusercontent.com/eishare/nodejs-python/main/hy2.sh | sed 's/\r$//' | bash -s -- 
 ```
 ⁕必须在脚本末尾添加服务器端口号（注意保留原代码末尾空格）
+
+# 3.TUIC在Alpine/Debian/Ubuntu/CentOS部署
+
+```
+curl -Ls https://raw.githubusercontent.com/eishare/nodejs-python/main/tuic-hy2.sh | bash -s -- 
+```
