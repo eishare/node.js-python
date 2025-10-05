@@ -26,7 +26,7 @@ TUIC_BIN="./tuic-server"
 # ===================== 输入端口或读取环境变量 =====================
 read_port() {
   if [[ -n "${SERVER_PORT:-}" ]]; then
-    TUIC_PORT="3250"
+    TUIC_PORT="$2"
     echo "✅ 从环境变量读取 TUIC(QUIC) 端口: $TUIC_PORT"
     return
   fi
@@ -192,4 +192,5 @@ main() {
 }
 
 main "$@"
+
 
