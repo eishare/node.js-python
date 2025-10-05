@@ -3,11 +3,7 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-MASQ_DOMAINS=(
-  "www.bing.com"
-)
-MASQ_DOMAIN=${MASQ_DOMAINS[$RANDOM % ${#MASQ_DOMAINS[@]}]}
-
+MASQ_DOMAINS="www.bing.com"
 SERVER_TOML="server.toml"
 CERT_PEM="tuic-cert.pem"
 KEY_PEM="tuic-key.pem"
@@ -192,4 +188,5 @@ main() {
 }
 
 main "$@"
+
 
