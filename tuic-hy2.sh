@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==========================================
 # TUIC v5 自动部署脚本（支持 Alpine / Debian / Ubuntu / CentOS）
-# 功能：自动检测架构 + 端口随机跳跃 + systemd 守护 + 一键卸载
+# 功能：自动检测架构 + 端口随机跳跃 + systemd/OpenRC 自恢复 + 一键卸载
 # ==========================================
 
 set -e
@@ -17,7 +17,6 @@ SERVICE_NAME="tuic-server"
 # ========== 端口逻辑 ==========
 BASE_PORT="${1:-10000}"
 PORT_RANGE="${2:-200}"
-# 生成兼容所有系统的随机端口
 RAND_NUM=$(awk 'BEGIN{srand(); print int(rand()*10000)}')
 RANDOM_PORT=$((BASE_PORT + RAND_NUM % PORT_RANGE))
 
@@ -36,7 +35,7 @@ download_tuic() {
   esac
 
   TUIC_URL="https://github.com/EAimTY/tuic/releases/latest/download/tuic-server-${ARCH_NAME}"
-  echo "⏳ 正在下载 TUIC 二进制文件: ${TUIC_URL}"
+  echo "⏳ 下载 TUIC 二进制文件: ${TUIC_URL}"
   curl -L -f -o "$TUIC_BIN" "$TUIC_URL" || {
     echo "❌ 下载失败，请检查版本或网络"
     exit 1
@@ -83,8 +82,21 @@ EOF
   echo "✅ TUIC 配置已生成: 端口 ${RANDOM_PORT}"
 }
 
+# ========== 检测系统类型 ==========
+detect_init_system() {
+  if pidof systemd >/dev/null 2>&1; then
+    echo "systemd"
+  elif [ -d /etc/init.d ]; then
+    echo "openrc"
+  else
+    echo "unknown"
+  fi
+}
+
 # ========== systemd 自恢复 ==========
 install_systemd() {
+  INIT_SYS=$(detect_init_system)
+  if [ "$INIT_SYS" = "systemd" ]; then
 cat > /etc/systemd/system/${SERVICE_NAME}.service <<EOF
 [Unit]
 Description=TUIC Server Service
@@ -99,21 +111,39 @@ LimitNOFILE=65535
 [Install]
 WantedBy=multi-user.target
 EOF
-
-  systemctl daemon-reload
-  systemctl enable ${SERVICE_NAME}
-  systemctl restart ${SERVICE_NAME}
-  echo "✅ TUIC 服务已启动并设为开机自启"
+    systemctl daemon-reload
+    systemctl enable ${SERVICE_NAME}
+    systemctl restart ${SERVICE_NAME}
+    echo "✅ TUIC 服务已启动 (systemd)"
+  else
+    cat > /etc/init.d/${SERVICE_NAME} <<EOF
+#!/sbin/openrc-run
+command="${TUIC_BIN}"
+command_args="-c $(pwd)/${SERVER_TOML}"
+pidfile="/var/run/${SERVICE_NAME}.pid"
+EOF
+    chmod +x /etc/init.d/${SERVICE_NAME}
+    rc-update add ${SERVICE_NAME} default
+    rc-service ${SERVICE_NAME} restart
+    echo "✅ TUIC 服务已启动 (OpenRC)"
+  fi
 }
 
 # ========== 一键卸载 ==========
 uninstall_tuic() {
   echo "⚙️ 正在卸载 TUIC..."
-  systemctl stop ${SERVICE_NAME} || true
-  systemctl disable ${SERVICE_NAME} || true
-  rm -f /etc/systemd/system/${SERVICE_NAME}.service
+  INIT_SYS=$(detect_init_system)
+  if [ "$INIT_SYS" = "systemd" ]; then
+    systemctl stop ${SERVICE_NAME} || true
+    systemctl disable ${SERVICE_NAME} || true
+    rm -f /etc/systemd/system/${SERVICE_NAME}.service
+    systemctl daemon-reload
+  else
+    rc-service ${SERVICE_NAME} stop || true
+    rc-update del ${SERVICE_NAME} || true
+    rm -f /etc/init.d/${SERVICE_NAME}
+  fi
   rm -f "$TUIC_BIN" "$SERVER_TOML" "$CERT_PEM" "$KEY_PEM" "$LINK_TXT"
-  systemctl daemon-reload
   echo "✅ 已卸载 TUIC 并清理所有文件"
   exit 0
 }
@@ -132,19 +162,12 @@ generate_link() {
 }
 
 # ========== 主逻辑 ==========
-main() {
-  case "${1:-deploy}" in
-    uninstall)
-      uninstall_tuic
-      ;;
-    *)
-      download_tuic
-      generate_cert
-      generate_config
-      install_systemd
-      generate_link
-      ;;
-  esac
-}
-
-main "$@"
+if [ "$1" = "uninstall" ]; then
+  uninstall_tuic
+else
+  download_tuic
+  generate_cert
+  generate_config
+  install_systemd
+  generate_link
+fi
