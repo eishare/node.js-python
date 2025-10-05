@@ -3,7 +3,7 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-MASQ_DOMAINS="www.bing.com"
+MASQ_DOMAIN="www.bing.com"    # 固定伪装域名
 SERVER_TOML="server.toml"
 CERT_PEM="tuic-cert.pem"
 KEY_PEM="tuic-key.pem"
@@ -12,21 +12,18 @@ TUIC_BIN="./tuic-server"
 
 # ===================== 输入端口或读取环境变量 =====================
 read_port() {
-  # 优先：命令行参数
   if [[ $# -ge 1 && -n "${1:-}" ]]; then
     TUIC_PORT="$1"
     echo "✅ 从命令行参数读取 TUIC(QUIC) 端口: $TUIC_PORT"
     return
   fi
 
-  # 其次：环境变量
   if [[ -n "${SERVER_PORT:-}" ]]; then
     TUIC_PORT="$SERVER_PORT"
     echo "✅ 从环境变量读取 TUIC(QUIC) 端口: $TUIC_PORT"
     return
   fi
 
-  # 最后：手动输入
   local port
   while true; do
     echo "⚙️ 请输入 TUIC(QUIC) 端口 (1024-65535):"
@@ -145,12 +142,12 @@ get_server_ip() {
 generate_link() {
   local ip="$1"
   cat > "$LINK_TXT" <<EOF
-tuic://${TUIC_UUID}:${TUIC_PASSWORD}@${ip}:${TUIC_PORT}?congestion_control=bbr&alpn=h3&allowInsecure=1&sni=${MASQ_DOMAIN}&udp_relay_mode=native&disable_sni=0&reduce_rtt=1&max_udp_relay_packet_size=8192#TUIC-HIGH-PERF-${ip}
+tuic://${TUIC_UUID}:${TUIC_PASSWORD}@${ip}:${TUIC_PORT}?congestion_control=bbr&alpn=h3&allowInsecure=1&sni=${MASQ_DOMAIN}&udp_relay_mode=native&disable_sni=0&reduce_rtt=1&max_udp_relay_packet_size=8192#TUIC-${ip}
 EOF
 
   echo ""
   echo "📱 TUIC 链接已生成并保存到 $LINK_TXT"
-  echo "🔗 订阅链接："
+  echo "🔗 链接内容："
   cat "$LINK_TXT"
   echo ""
 }
@@ -160,6 +157,7 @@ run_background_loop() {
   echo "✅ 服务已启动，tuic-server 正在运行..."
   while true; do
     "$TUIC_BIN" -c "$SERVER_TOML"
+    echo "⚠️ tuic-server 已退出，5秒后重启..."
     sleep 5
   done
 }
@@ -173,7 +171,7 @@ main() {
     TUIC_PASSWORD="$(openssl rand -hex 16)"
     echo "🔑 UUID: $TUIC_UUID"
     echo "🔑 密码: $TUIC_PASSWORD"
-    echo "🎯 SNI: ${MASQ_DOMAIN:-www.bing.com}"
+    echo "🎯 SNI: ${MASQ_DOMAIN}"
     generate_cert
     check_tuic_server
     generate_config
@@ -188,7 +186,3 @@ main() {
 }
 
 main "$@"
-
-
-
-
