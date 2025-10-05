@@ -3,5 +3,5 @@
 
 部署脚本
 ```
-bash <(curl -Ls https://raw.githubusercontent.com/eishare/tuic-nodejs/main/tuic.sh)
+bash <(curl -Ls https://github.com/eishare/tuic-nodejs/blob/main/tuic.sh)
 ```
