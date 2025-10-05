@@ -2,10 +2,9 @@
 # ==========================================
 # TUIC v5 自动部署脚本（支持 Alpine / Debian / Ubuntu / CentOS）
 # 功能：自动检测架构 + 端口随机跳跃 + systemd 守护 + 一键卸载
-# 作者：Eishare 修改版
 # ==========================================
 
-set -e
+set -euo pipefail
 
 MASQ_DOMAIN="www.bing.com"
 CERT_PEM="tuic-cert.pem"
@@ -29,14 +28,17 @@ download_tuic() {
 
   ARCH=$(uname -m)
   case "$ARCH" in
-    x86_64|amd64) ARCH_NAME="x86_64-unknown-linux-musl" ;;
-    aarch64|arm64) ARCH_NAME="aarch64-unknown-linux-musl" ;;
+    x86_64|amd64) ARCH_NAME="x86_64-linux" ;;
+    aarch64|arm64) ARCH_NAME="aarch64-linux" ;;
     *) echo "❌ 不支持的架构: $ARCH"; exit 1 ;;
   esac
 
-  TUIC_URL="https://github.com/EAimTY/tuic/releases/latest/download/tuic-server-${ARCH_NAME}"
-  echo "⏳ 正在下载 TUIC 二进制文件..."
-  curl -L -f -o "$TUIC_BIN" "$TUIC_URL"
+  TUIC_URL="https://github.com/Itsusinn/tuic/releases/download/v1.3.5/tuic-server-${ARCH_NAME}"
+  echo "⏳ 正在下载 TUIC 二进制文件: ${TUIC_URL}"
+  curl -L -f -o "$TUIC_BIN" "$TUIC_URL" || {
+    echo "❌ 下载失败，请检查版本或网络"
+    exit 1
+  }
   chmod +x "$TUIC_BIN"
   echo "✅ TUIC 下载完成: $TUIC_BIN"
 }
@@ -122,4 +124,25 @@ get_ip() {
 # ========== 生成节点链接 ==========
 generate_link() {
   IP=$(get_ip)
-  echo "tuic://${UUID}:${PASSWORD
+  echo "tuic://${UUID}:${PASSWORD}@${IP}:${RANDOM_PORT}?sni=${MASQ_DOMAIN}&allowInsecure=1#TUIC-${IP}" > "$LINK_TXT"
+  echo "📄 节点信息："
+  cat "$LINK_TXT"
+}
+
+# ========== 主逻辑 ==========
+main() {
+  case "${1:-deploy}" in
+    uninstall)
+      uninstall_tuic
+      ;;
+    *)
+      download_tuic
+      generate_cert
+      generate_config
+      install_systemd
+      generate_link
+      ;;
+  esac
+}
+
+main "$@"
