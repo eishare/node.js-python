@@ -173,7 +173,7 @@ main() {
     TUIC_PASSWORD="$(openssl rand -hex 16)"
     echo "🔑 UUID: $TUIC_UUID"
     echo "🔑 密码: $TUIC_PASSWORD"
-    echo "🎯 SNI: $MASQ_DOMAIN"
+    echo "🎯 SNI: $MASQ_DOMAIN:-www.bing.com"
     generate_cert
     check_tuic_server
     generate_config
@@ -188,5 +188,6 @@ main() {
 }
 
 main "$@"
+
 
 
