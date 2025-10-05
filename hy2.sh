@@ -1,26 +1,35 @@
 #!/usr/bin/env bash
 # -*- coding: utf-8 -*-
-# Hysteria2 极简部署脚本 - Shell 版
-# 功能与 Node.js 版基本一致，超低内存 VPS 可用
+# Hysteria2 极简部署脚本（支持命令行端口参数 + 默认跳过证书验证）
+# 适用于超低内存环境（32-64MB）
 
 set -e
 
-# ---------- 配置（可自行修改） ----------
+# ---------- 默认配置 ----------
 HYSTERIA_VERSION="v2.6.3"
-SERVER_PORT=22222        # 监听端口
-AUTH_PASSWORD="20250930" # 强烈建议改成更复杂的密码
+DEFAULT_PORT=22222         # 若未提供参数则使用此端口
+AUTH_PASSWORD="20250930"   # 建议修改为复杂密码
 CERT_FILE="cert.pem"
 KEY_FILE="key.pem"
 SNI="www.bing.com"
 ALPN="h3"
-# ---------------------------------------
+# ------------------------------
 
 echo "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
-echo "Hysteria2 极简部署脚本 - Shell 版"
-echo "适用于超低内存环境（32-64MB）"
+echo "Hysteria2 极简部署脚本（Shell 版）"
+echo "支持命令行端口参数，如：bash hysteria2.sh 443"
 echo "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
 
-# 检测架构
+# ---------- 获取端口 ----------
+if [[ $# -ge 1 && -n "${1:-}" ]]; then
+    SERVER_PORT="$1"
+    echo "✅ 使用命令行指定端口: $SERVER_PORT"
+else
+    SERVER_PORT="${SERVER_PORT:-$DEFAULT_PORT}"
+    echo "⚙️ 未提供端口参数，使用默认端口: $SERVER_PORT"
+fi
+
+# ---------- 检测架构 ----------
 arch_name() {
     local machine
     machine=$(uname -m | tr '[:upper:]' '[:lower:]')
@@ -42,7 +51,7 @@ fi
 BIN_NAME="hysteria-linux-${ARCH}"
 BIN_PATH="./${BIN_NAME}"
 
-# 下载二进制
+# ---------- 下载二进制 ----------
 download_binary() {
     if [ -f "$BIN_PATH" ]; then
         echo "✅ 二进制已存在，跳过下载。"
@@ -55,7 +64,7 @@ download_binary() {
     echo "✅ 下载完成并设置可执行: $BIN_PATH"
 }
 
-# 生成证书
+# ---------- 生成证书 ----------
 ensure_cert() {
     if [ -f "$CERT_FILE" ] && [ -f "$KEY_FILE" ]; then
         echo "✅ 发现证书，使用现有 cert/key。"
@@ -67,7 +76,7 @@ ensure_cert() {
     echo "✅ 证书生成成功。"
 }
 
-# 写配置文件
+# ---------- 写配置文件 ----------
 write_config() {
 cat > server.yaml <<EOF
 listen: ":${SERVER_PORT}"
@@ -85,21 +94,21 @@ bandwidth:
 quic:
   max_idle_timeout: "10s"
   max_concurrent_streams: 4
-  initial_stream_receive_window: 65536        # 64 KB
-  max_stream_receive_window: 131072           # 128 KB
-  initial_conn_receive_window: 131072         # 128 KB
-  max_conn_receive_window: 262144             # 256 KB
+  initial_stream_receive_window: 65536
+  max_stream_receive_window: 131072
+  initial_conn_receive_window: 131072
+  max_conn_receive_window: 262144
 EOF
-    echo "✅ 写入配置 server.yaml（SNI=${SNI}, ALPN=${ALPN}）。"
+    echo "✅ 写入配置 server.yaml（端口=${SERVER_PORT}, SNI=${SNI}, ALPN=${ALPN}）。"
 }
 
-# 获取服务器 IP
+# ---------- 获取服务器 IP ----------
 get_server_ip() {
     IP=$(curl -s --max-time 10 https://api.ipify.org || echo "YOUR_SERVER_IP")
     echo "$IP"
 }
 
-# 打印连接信息
+# ---------- 打印连接信息 ----------
 print_connection_info() {
     local IP="$1"
     echo "🎉 Hysteria2 部署成功！（极简优化版）"
@@ -126,7 +135,7 @@ print_connection_info() {
     echo "=========================================================================="
 }
 
-# 主流程
+# ---------- 主逻辑 ----------
 main() {
     download_binary
     ensure_cert
@@ -137,4 +146,4 @@ main() {
     exec "$BIN_PATH" server -c server.yaml
 }
 
-main
+main "$@"
