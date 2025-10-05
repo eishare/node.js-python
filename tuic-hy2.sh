@@ -3,8 +3,8 @@ set -euo pipefail
 IFS=$'\n\t'
 
 # ===================== 参数解析 =====================
-MODE=${1:-both}           # tuic / hysteria2 / both
-PORT_START=${2:-20000}    # 起始端口
+MODE=${1:-both}            # tuic / hysteria2 / both / uninstall
+PORT_START=${2:-20000}     # 起始端口
 PORT_END=${3:-$PORT_START} # 结束端口（可选）
 
 if [[ "$PORT_START" -gt "$PORT_END" ]]; then
@@ -12,23 +12,20 @@ if [[ "$PORT_START" -gt "$PORT_END" ]]; then
   exit 1
 fi
 
-# 随机选择端口
 pick_port() {
   shuf -i "$PORT_START"-"$PORT_END" -n 1
 }
 
-# 公共变量
 SNI="www.bing.com"
 ALPN="h3"
 
-# 安装基础依赖
 install_deps() {
   if command -v apk &>/dev/null; then
-    apk add --no-cache curl openssl coreutils >/dev/null
+    apk add --no-cache curl openssl coreutils bash >/dev/null
   elif command -v apt &>/dev/null; then
-    apt update && apt install -y curl openssl coreutils >/dev/null
+    apt update && apt install -y curl openssl coreutils bash >/dev/null
   elif command -v yum &>/dev/null; then
-    yum install -y curl openssl coreutils >/dev/null
+    yum install -y curl openssl coreutils bash >/dev/null
   fi
 }
 
@@ -45,13 +42,18 @@ deploy_tuic() {
 
   mkdir -p "$CERT_DIR"
 
-  # 下载 tuic-server
+  # 下载 TUIC 二进制（固定版本 v1.3.5）
   ARCH=$(uname -m)
   if [[ "$ARCH" == "x86_64" ]]; then ARCH="x86_64"; fi
   if [[ "$ARCH" == "aarch64" || "$ARCH" == "arm64" ]]; then ARCH="aarch64"; fi
 
   if [[ ! -x "$BIN" ]]; then
-    curl -L -o "$BIN" "https://github.com/EAimTY/tuic/releases/latest/download/tuic-server-${ARCH}-unknown-linux-musl"
+    TUIC_URL="https://github.com/Itsusinn/tuic/releases/download/v1.3.5/tuic-server-${ARCH}-unknown-linux-musl"
+    echo "⏳ 下载 TUIC: $TUIC_URL"
+    if ! curl -fL -o "$BIN" "$TUIC_URL"; then
+      echo "❌ TUIC 下载失败，请检查 URL"
+      exit 1
+    fi
     chmod +x "$BIN"
   fi
 
@@ -106,13 +108,18 @@ deploy_hysteria2() {
 
   mkdir -p "$CERT_DIR"
 
-  # 下载 Hysteria2
+  # 下载 Hysteria2 二进制
   ARCH=$(uname -m)
   if [[ "$ARCH" == "x86_64" ]]; then ARCH="amd64"; fi
   if [[ "$ARCH" == "aarch64" || "$ARCH" == "arm64" ]]; then ARCH="arm64"; fi
 
   if [[ ! -x "$BIN" ]]; then
-    curl -L -o "$BIN" "https://github.com/apernet/hysteria/releases/download/app/v2.6.3/hysteria-linux-${ARCH}"
+    HY2_URL="https://github.com/apernet/hysteria/releases/download/app/v2.6.3/hysteria-linux-${ARCH}"
+    echo "⏳ 下载 Hysteria2: $HY2_URL"
+    if ! curl -fL -o "$BIN" "$HY2_URL"; then
+      echo "❌ Hysteria2 下载失败，请检查 URL"
+      exit 1
+    fi
     chmod +x "$BIN"
   fi
 
@@ -135,6 +142,7 @@ bandwidth:
   down: "200mbps"
 quic:
   max_idle_timeout: "10s"
+tls_insecure_skip_verify: true
 EOF
 
   # systemd
@@ -182,18 +190,13 @@ uninstall_all() {
 }
 
 # ===================== 主流程 =====================
-if [[ "${MODE}" == "uninstall" ]]; then
-  uninstall_all
-fi
-
-if [[ "${MODE}" == "tuic" ]]; then
-  deploy_tuic
-elif [[ "${MODE}" == "hysteria2" ]]; then
-  deploy_hysteria2
-elif [[ "${MODE}" == "both" ]]; then
-  deploy_tuic
-  deploy_hysteria2
-else
-  echo "❌ 模式错误，可选 tuic / hysteria2 / both / uninstall"
-  exit 1
-fi
+case "$MODE" in
+  uninstall) uninstall_all ;;
+  tuic) deploy_tuic ;;
+  hysteria2) deploy_hysteria2 ;;
+  both) deploy_tuic && deploy_hysteria2 ;;
+  *)
+    echo "❌ 模式错误，可选 tuic / hysteria2 / both / uninstall"
+    exit 1
+    ;;
+esac
