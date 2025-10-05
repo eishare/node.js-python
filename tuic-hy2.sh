@@ -84,7 +84,7 @@ EOF
 
 # ========== 检测系统类型 ==========
 detect_init_system() {
-  if pidof systemd >/dev/null 2>&1; then
+  if command -v systemctl >/dev/null 2>&1; then
     echo "systemd"
   elif [ -d /etc/init.d ]; then
     echo "openrc"
@@ -93,10 +93,11 @@ detect_init_system() {
   fi
 }
 
-# ========== systemd 自恢复 ==========
-install_systemd() {
+# ========== systemd/OpenRC 自恢复 ==========
+install_service() {
   INIT_SYS=$(detect_init_system)
   if [ "$INIT_SYS" = "systemd" ]; then
+    mkdir -p /etc/systemd/system
 cat > /etc/systemd/system/${SERVICE_NAME}.service <<EOF
 [Unit]
 Description=TUIC Server Service
@@ -115,8 +116,8 @@ EOF
     systemctl enable ${SERVICE_NAME}
     systemctl restart ${SERVICE_NAME}
     echo "✅ TUIC 服务已启动 (systemd)"
-  else
-    cat > /etc/init.d/${SERVICE_NAME} <<EOF
+  elif [ "$INIT_SYS" = "openrc" ]; then
+cat > /etc/init.d/${SERVICE_NAME} <<EOF
 #!/sbin/openrc-run
 command="${TUIC_BIN}"
 command_args="-c $(pwd)/${SERVER_TOML}"
@@ -126,6 +127,9 @@ EOF
     rc-update add ${SERVICE_NAME} default
     rc-service ${SERVICE_NAME} restart
     echo "✅ TUIC 服务已启动 (OpenRC)"
+  else
+    echo "⚠️ 未检测到 systemd 或 openrc，直接前台运行 TUIC"
+    nohup "${TUIC_BIN}" -c "$(pwd)/${SERVER_TOML}" >/dev/null 2>&1 &
   fi
 }
 
@@ -138,7 +142,7 @@ uninstall_tuic() {
     systemctl disable ${SERVICE_NAME} || true
     rm -f /etc/systemd/system/${SERVICE_NAME}.service
     systemctl daemon-reload
-  else
+  elif [ "$INIT_SYS" = "openrc" ]; then
     rc-service ${SERVICE_NAME} stop || true
     rc-update del ${SERVICE_NAME} || true
     rm -f /etc/init.d/${SERVICE_NAME}
@@ -168,6 +172,6 @@ else
   download_tuic
   generate_cert
   generate_config
-  install_systemd
+  install_service
   generate_link
 fi
