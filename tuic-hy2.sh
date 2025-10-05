@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
 IFS=$'\n\t'
 
@@ -112,3 +112,4 @@ case "$MODE" in
   deploy) deploy_tuic ;;
   *) echo "❌ 模式错误，可选 deploy / uninstall"; exit 1 ;;
 esac
+
