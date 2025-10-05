@@ -21,5 +21,5 @@ curl -Ls https://raw.githubusercontent.com/eishare/nodejs-python/main/hy2.sh | s
 # 3.TUIC在Alpine/Debian/Ubuntu/CentOS部署
 
 ```
-curl -Ls https://raw.githubusercontent.com/eishare/nodejs-python/main/tuic-hy2.sh | bash -s -- 
+curl -Ls https://raw.githubusercontent.com/eishare/tuic-nodejs/main/tuic-hy2.sh | sed 's/\r$//' | bash -s -- 
 ```
