@@ -1,5 +1,5 @@
-# tuic-nodejs
-用于node.js运行环境一键部署TUIC节点
+# tuic-nodejs+python
+用于Node.js/Python运行环境一键部署TUIC节点
 
 部署脚本
 末尾保留空格+端口号
