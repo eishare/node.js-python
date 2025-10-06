@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # TUIC v5 over QUIC 自动部署脚本（支持 Pterodactyl SERVER_PORT + 命令行参数）
 set -euo pipefail
 IFS=$'\n\t'
@@ -186,3 +186,4 @@ main() {
 }
 
 main "$@"
+
