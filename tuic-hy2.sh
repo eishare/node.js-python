@@ -7,8 +7,8 @@
 # 2. 安装指定协议和端口跳跃: sudo ./unified_proxy_installer.sh <tuic|hysteria2> <MIN-MAX>
 # 3. 卸载: sudo ./unified_proxy_installer.sh uninstall
 
-set -euo pipefail
-IFS=$'\n\t'
+# 仅保留 -e (遇到错误退出) 和 -u (使用未定义变量报错)
+set -eu
 
 # ===================== 全局变量与配置 =====================
 
@@ -41,7 +41,7 @@ PROXY_PASSWORD=""
 
 # 检查权限
 check_root() {
-    if [[ "$EUID" -ne 0 ]]; then
+    if [ "$EUID" -ne 0 ]; then
         echo "❌ 请使用 root 用户运行此脚本。"
         exit 1
     fi
@@ -83,14 +83,19 @@ install_dependencies() {
 # 统一的架构检测函数
 arch_name() {
     local machine
+    # 使用 tr 确保兼容性
     machine=$(uname -m | tr '[:upper:]' '[:lower:]')
-    if [[ "$machine" == *"arm64"* ]] || [[ "$machine" == *"aarch64"* ]]; then
-        echo "arm64"
-    elif [[ "$machine" == *"x86_64"* ]] || [[ "$machine" == *"amd64"* ]]; then
-        echo "amd64"
-    else
-        echo ""
-    fi
+    case "$machine" in
+        *arm64*|*aarch64*)
+            echo "arm64"
+            ;;
+        *x86_64*|*amd64*)
+            echo "amd64"
+            ;;
+        *)
+            echo ""
+            ;;
+    esac
 }
 
 # 生成随机端口（用于端口跳跃）
@@ -102,7 +107,8 @@ generate_random_port() {
         echo "❌ 端口范围无效 ($min_port > $max_port)。"
         return 1
     fi
-    local range=$((max_port - min_port + 1))
+    local range
+    range=$((max_port - min_port + 1))
     PROXY_PORT=$(( (RANDOM % range) + min_port ))
     echo "✅ 已生成随机端口: $PROXY_PORT"
     return 0
@@ -110,8 +116,8 @@ generate_random_port() {
 
 # 生成安全的 UUID (兼容 Alpine/极简环境)
 generate_safe_uuid() {
-    # 尝试读取 /proc/sys/kernel/random/uuid，失败则使用 /dev/urandom + sed 格式化为 UUID
     local uuid
+    # 使用兼容 POSIX 的 /dev/urandom 方式
     uuid=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || \
         head -c 16 /dev/urandom | od -An -t x1 | tr -d ' \n' | sed -E 's/(.{8})(.{4})(.{4})(.{4})(.{12})/\1-\2-\3-\4-\5/')
     echo "$uuid"
@@ -132,14 +138,16 @@ read_port() {
     echo "2) 随机端口跳跃 (例如: 10000-20000 之间随机选一个)"
     read -rp "请选择端口设置模式 (1/2): " port_mode
 
-    if [[ "$port_mode" == "2" ]]; then
+    if [ "$port_mode" = "2" ]; then
         while true; do
             read -rp "请输入端口范围 (MIN-MAX, 例如 10000-20000): " port_range
-            if [[ "$port_range" =~ ^[0-9]+-[0-9]+$ ]]; then
+            # 使用更兼容 sh 的 case/grep 验证
+            if echo "$port_range" | grep -q '^[0-9]\+-[0-9]\+$'; then
                 min_p=$(echo "$port_range" | awk -F'-' '{print $1}')
                 max_p=$(echo "$port_range" | awk -F'-' '{print $2}')
                 
-                if [[ "$min_p" -ge 1024 && "$max_p" -le 65535 && "$min_p" -le "$max_p" ]]; then
+                # 使用 [ ] 进行算术比较
+                if [ "$min_p" -ge 1024 ] && [ "$max_p" -le 65535 ] && [ "$min_p" -le "$max_p" ]; then
                     generate_random_port "$min_p" "$max_p"
                     return 0
                 fi
@@ -151,26 +159,31 @@ read_port() {
         while true; do
             echo "⚙️ 请输入代理端口 (1024-65535):"
             read -rp "> " port
-            if [[ ! "$port" =~ ^[0-9]+$ || "$port" -lt 1024 || "$port" -gt 65535 ]]; then
-                echo "❌ 无效端口: $port"
-                continue
+            if [ -z "$port" ] || ! echo "$port" | grep -q '^[0-9]\+$'; then
+                 echo "❌ 无效端口: $port"
+                 continue
             fi
-            PROXY_PORT="$port"
-            break
+            # 使用 [ ] 进行算术比较
+            if [ "$port" -ge 1024 ] && [ "$port" -le 65535 ]; then
+                PROXY_PORT="$port"
+                break
+            fi
+            echo "❌ 端口不在范围内"
         done
     fi
 }
 
 # 检查/加载现有配置
 load_existing_config() {
-  if [[ -f "$SERVICE_DIR/$TUIC_SERVER_TOML" ]]; then
+  # 使用 [ -f ... ] 代替 [[ -f ... ]] 增加 sh 兼容性
+  if [ -f "$SERVICE_DIR/$TUIC_SERVER_TOML" ]; then
     # 从 TUIC 配置加载
     PROXY_PORT=$(grep '^server =' "$SERVICE_DIR/$TUIC_SERVER_TOML" | sed -E 's/.*:([0-9]+)\"/\1/' || echo "")
     PROXY_UUID=$(grep '^\[users\]' -A1 "$SERVICE_DIR/$TUIC_SERVER_TOML" | tail -n1 | awk '{print $1}' || echo "")
     PROXY_PASSWORD=$(grep '^\[users\]' -A1 "$SERVICE_DIR/$TUIC_SERVER_TOML" | tail -n1 | awk -F'"' '{print $2}' || echo "")
     echo "📂 检测到已有 TUIC 配置，加载中..."
     return 0
-  elif [[ -f "$SERVICE_DIR/$HY2_CONFIG_YAML" ]]; then
+  elif [ -f "$SERVICE_DIR/$HY2_CONFIG_YAML" ]; then
     # 从 Hysteria2 配置加载
     PROXY_PORT=$(grep '^listen: ' "$SERVICE_DIR/$HY2_CONFIG_YAML" | sed -E 's/.*:([0-9]+)/\1/' || echo "")
     PROXY_PASSWORD=$(grep '^  password: ' "$SERVICE_DIR/$HY2_CONFIG_YAML" | awk '{print $2}' || echo "")
@@ -186,18 +199,20 @@ generate_cert() {
     local KEY_FILE="$2"
     local DOMAIN="$3"
     
-    if [[ -f "$CERT_FILE" && "$KEY_FILE" ]]; then
+    if [ -f "$CERT_FILE" ] && [ -f "$KEY_FILE" ]; then
         echo "🔐 检测到已有证书，跳过生成"
         return
     fi
     echo "🔐 生成自签 ECDSA-P256 证书..."
-    # 确保 openssl 命令存在
+    
     if ! command -v openssl >/dev/null; then
         echo "❌ openssl 未安装，无法生成证书。请手动安装后再试。"
         exit 1
     fi
+    # 使用 openssl 创建证书
     openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
         -keyout "$KEY_FILE" -out "$CERT_FILE" -subj "/CN=${DOMAIN}" -days 365 -nodes >/dev/null 2>&1
+    
     chmod 600 "$KEY_FILE"
     chmod 644 "$CERT_FILE"
     echo "✅ 自签证书生成完成"
@@ -217,7 +232,7 @@ deploy_tuic() {
     SERVICE_NAME="tuic"
     
     # 1. 初始化或加载凭证
-    if [[ -z "$PROXY_UUID" ]]; then
+    if [ -z "$PROXY_UUID" ]; then
         PROXY_UUID=$(generate_safe_uuid)
         PROXY_PASSWORD=$(generate_safe_password)
         echo "🔑 UUID: $PROXY_UUID"
@@ -229,20 +244,21 @@ deploy_tuic() {
     # 2. 证书和二进制文件
     generate_cert "$TUIC_CERT_PEM" "$TUIC_KEY_PEM" "$TUIC_MASQ_DOMAIN"
     
+    # 使用 [ ] 替代 [[ ]]
     if [ ! -x "$TUIC_BIN" ]; then
         echo "📥 未找到 tuic-server，正在下载..."
         local ARCH
         ARCH=$(uname -m)
-        if [[ "$ARCH" != "x86_64" ]]; then
+        if [ "$ARCH" != "x86_64" ]; then
             echo "❌ 暂不支持架构: $ARCH"
             exit 1
         fi
         
-        # 使用更简洁的 if ! COMMAND 结构来处理下载失败
-        if ! curl -L -f -o "$TUIC_BIN" "$TUIC_URL"; then
-            echo "❌ TUIC Server 下载失败，请手动下载 $TUIC_URL"
+        # 核心兼容性修复: 使用 command || { ... } 结构替代 if ! command; then ... fi
+        curl -L -f -o "$TUIC_BIN" "$TUIC_URL" || {
+            echo "❌ TUIC Server 下载失败 (Curl Exit Code: $?)。请检查网络和 $SERVICE_DIR 目录权限。"
             exit 1
-        fi
+        }
         
         chmod +x "$TUIC_BIN"
         echo "✅ tuic-server 下载完成"
@@ -315,7 +331,7 @@ deploy_hysteria2() {
     SERVICE_NAME="hysteria2"
     
     # 1. 初始化或加载凭证
-    if [[ -z "$PROXY_PASSWORD" ]]; then
+    if [ -z "$PROXY_PASSWORD" ]; then
         PROXY_PASSWORD=$(generate_safe_password)
         echo "🔑 密码: $PROXY_PASSWORD"
     fi
@@ -338,12 +354,11 @@ deploy_hysteria2() {
     if [ ! -x "$HY2_BIN" ]; then
         echo "📥 未找到 hysteria2-server，正在下载 ${HYSTERIA_VERSION} for ${ARCH_CODE}..."
         
-        # 使用更简洁的 if ! COMMAND 结构来处理下载失败 (修复可能的语法错误)
-        if ! curl -L -f -o "$HY2_BIN_DOWNLOAD" "$HY2_URL_FULL"; then
-            # Curl 写入失败通常是权限或文件系统问题，这里退出并提示
-            echo "❌ Hysteria2 Server 下载失败或写入失败 (Curl Error: $?)，请检查网络和 $SERVICE_DIR 目录权限。"
+        # 核心兼容性修复: 使用 command || { ... } 结构替代 if ! command; then ... fi
+        curl -L -f -o "$HY2_BIN_DOWNLOAD" "$HY2_URL_FULL" || {
+            echo "❌ Hysteria2 Server 下载失败 (Curl Exit Code: $?)。请检查网络和 $SERVICE_DIR 目录权限。"
             exit 1
-        fi
+        }
         
         # 如果下载成功，继续执行
         chmod +x "$HY2_BIN_DOWNLOAD"
@@ -412,7 +427,7 @@ run_background_loop() {
 
     while true; do
         # 根据参数决定如何执行，以兼容 tuic 和 hysteria2
-        if [[ -z "$CONFIG_FILE" ]]; then
+        if [ -z "$CONFIG_FILE" ]; then
             # TUIC: ./tuic-server -c tuic_server.toml
             "$BINARY" -c "$CONFIG_CMD_ARG"
         else
@@ -453,16 +468,22 @@ install_and_run_non_interactive() {
     echo "===================================================="
     
     # 1. 检查和设置端口
-    if [[ "$PORT_SETTING" =~ ^[0-9]+-[0-9]+$ ]]; then
+    # 使用 grep/awk 替代 [[ =~ ]] 确保兼容性
+    if echo "$PORT_SETTING" | grep -q '^[0-9]\+-[0-9]\+$'; then
         local min_p max_p
         min_p=$(echo "$PORT_SETTING" | awk -F'-' '{print $1}')
         max_p=$(echo "$PORT_SETTING" | awk -F'-' '{print $2}')
         if ! generate_random_port "$min_p" "$max_p"; then
             exit 1
         fi
-    elif [[ "$PORT_SETTING" =~ ^[0-9]+$ && "$PORT_SETTING" -ge 1024 && "$PORT_SETTING" -le 65535 ]]; then
-        PROXY_PORT="$PORT_SETTING"
-        echo "✅ 使用指定端口: $PROXY_PORT"
+    elif echo "$PORT_SETTING" | grep -q '^[0-9]\+$'; then
+        if [ "$PORT_SETTING" -ge 1024 ] && [ "$PORT_SETTING" -le 65535 ]; then
+            PROXY_PORT="$PORT_SETTING"
+            echo "✅ 使用指定端口: $PROXY_PORT"
+        else
+            echo "❌ 端口参数无效。请使用单个端口 (1024-65535) 或范围 (MIN-MAX)。"
+            exit 1
+        fi
     else
         echo "❌ 端口参数无效。请使用单个端口 (1024-65535) 或范围 (MIN-MAX)。"
         exit 1
@@ -483,9 +504,9 @@ install_and_run_non_interactive() {
     
     install_dependencies
     
-    if [[ "$PROTOCOL" == "tuic" ]]; then
+    if [ "$PROTOCOL" = "tuic" ]; then
         deploy_tuic
-    elif [[ "$PROTOCOL" == "hysteria2" ]]; then
+    elif [ "$PROTOCOL" = "hysteria2" ]; then
         deploy_hysteria2
     fi
 }
@@ -516,9 +537,9 @@ main_menu() {
             echo "2) Hysteria2"
             read -rp "输入选项 (1/2): " PROTOCOL_CHOICE
             
-            if [[ "$PROTOCOL_CHOICE" == "1" ]]; then
+            if [ "$PROTOCOL_CHOICE" = "1" ]; then
                 PROTOCOL="tuic"
-            elif [[ "$PROTOCOL_CHOICE" == "2" ]]; then
+            elif [ "$PROTOCOL_CHOICE" = "2" ]; then
                 PROTOCOL="hysteria2"
             else
                 echo "❌ 无效的选择，退出。"
@@ -540,9 +561,9 @@ main_menu() {
                 echo "⚠️ 检测到已有配置，端口/密码已加载。若需更改端口，请先卸载。"
             fi
             
-            if [[ "$PROTOCOL" == "tuic" ]]; then
+            if [ "$PROTOCOL" = "tuic" ]; then
                 deploy_tuic
-            elif [[ "$PROTOCOL" == "hysteria2" ]]; then
+            elif [ "$PROTOCOL" = "hysteria2" ]; then
                 deploy_hysteria2
             fi
             ;;
@@ -565,10 +586,11 @@ main_menu() {
 main() {
     check_root
     
-    if [[ $# -ge 2 && ( "$1" == "tuic" || "$1" == "hysteria2" ) ]]; then
+    # 使用 [ ] 替代 [[ ]] 增强兼容性
+    if [ $# -ge 2 ] && { [ "$1" = "tuic" ] || [ "$1" = "hysteria2" ]; }; then
         # 模式 1: 一键安装/更新: <PROTOCOL> <PORT/RANGE>
         install_and_run_non_interactive "$1" "$2"
-    elif [[ $# -ge 1 && "$1" == "uninstall" ]]; then
+    elif [ $# -ge 1 ] && [ "$1" = "uninstall" ]; then
         # 模式 2: 一键卸载
         uninstall_service
     else
