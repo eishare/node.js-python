@@ -1,8 +1,8 @@
-#!/bin/sh
-# TUIC v5 over QUIC 自动部署脚本（兼容 Alpine & Ubuntu/Debian）
-# 极度精简版本
+#!/bin/bash
+# TUIC v5 over QUIC 自动部署（Alpine 适配）
+set -euo pipefail
+IFS=$'\n\t'
 
-set -e
 MASQ_DOMAIN="www.bing.com"
 SERVER_TOML="server.toml"
 CERT_PEM="tuic-cert.pem"
@@ -10,57 +10,50 @@ KEY_PEM="tuic-key.pem"
 LINK_TXT="tuic_link.txt"
 TUIC_BIN="./tuic-server"
 
-# ===================== 检查依赖 =====================
-command -v curl >/dev/null 2>&1 || { echo "curl 未安装，正在安装..."; apk add --no-cache curl >/dev/null 2>&1 || apt -y install curl >/dev/null 2>&1; }
-command -v openssl >/dev/null 2>&1 || { echo "openssl 未安装，正在安装..."; apk add --no-cache openssl >/dev/null 2>&1 || apt -y install openssl >/dev/null 2>&1; }
-command -v uuidgen >/dev/null 2>&1 || { echo "uuidgen 未安装，正在安装..."; apk add --no-cache util-linux >/dev/null 2>&1 || apt -y install uuid-runtime >/dev/null 2>&1; }
-
-# ===================== 端口/UUID/密码 =====================
+# ---------- 输入端口 ----------
 read_port() {
-  if [ -n "$1" ]; then
-    TUIC_PORT="$1"
-  elif [ -n "${SERVER_PORT:-}" ]; then
-    TUIC_PORT="$SERVER_PORT"
-  else
-    TUIC_PORT=$(shuf -i2000-65535 -n1)
+  if [[ $# -ge 1 && -n "${1:-}" ]]; then
+    TUIC_PORT="$1"; echo "✅ 从命令行参数读取 TUIC 端口: $TUIC_PORT"; return
   fi
-  echo "✅ TUIC端口: $TUIC_PORT"
+  if [[ -n "${SERVER_PORT:-}" ]]; then
+    TUIC_PORT="$SERVER_PORT"; echo "✅ 从环境变量读取 TUIC 端口: $TUIC_PORT"; return
+  fi
+  while true; do
+    read -rp "⚙️ 请输入 TUIC 端口 (1024-65535): " port
+    [[ "$port" =~ ^[0-9]+$ && "$port" -ge 1024 && "$port" -le 65535 ]] && TUIC_PORT="$port" && break
+  done
 }
 
-load_existing_config() {
-  if [ -f "$SERVER_TOML" ]; then
-    TUIC_PORT=$(grep '^server =' "$SERVER_TOML" | sed -E 's/.*:(.*)\"/\1/')
-    TUIC_UUID=$(grep '^\[users\]' -A1 "$SERVER_TOML" | tail -n1 | awk '{print $1}')
-    TUIC_PASSWORD=$(grep '^\[users\]' -A1 "$SERVER_TOML" | tail -n1 | awk -F'"' '{print $2}')
-    echo "📂 已加载配置: $TUIC_PORT / $TUIC_UUID / $TUIC_PASSWORD"
-    return 0
-  fi
-  return 1
+# ---------- 加载已有配置 ----------
+load_config() {
+  [[ -f "$SERVER_TOML" ]] || return 1
+  TUIC_PORT=$(grep '^server =' "$SERVER_TOML" | sed -E 's/.*:(.*)\"/\1/')
+  TUIC_UUID=$(grep '^\[users\]' -A1 "$SERVER_TOML" | tail -n1 | awk '{print $1}')
+  TUIC_PASSWORD=$(grep '^\[users\]' -A1 "$SERVER_TOML" | tail -n1 | awk -F'"' '{print $2}')
+  echo "📂 已加载配置: $TUIC_PORT / $TUIC_UUID / $TUIC_PASSWORD"
 }
 
-# ===================== 证书生成 =====================
+# ---------- 生成自签证书 ----------
 generate_cert() {
-  [ -f "$CERT_PEM" ] && [ -f "$KEY_PEM" ] && echo "🔐 已有证书，跳过生成" && return
-  echo "🔐 生成自签 ECDSA-P256 证书..."
+  [[ -f "$CERT_PEM" && -f "$KEY_PEM" ]] && { echo "🔐 已有证书，跳过生成"; return; }
+  echo "🔐 生成自签证书..."
   openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
     -keyout "$KEY_PEM" -out "$CERT_PEM" -subj "/CN=${MASQ_DOMAIN}" -days 365 -nodes >/dev/null 2>&1
-  chmod 600 "$KEY_PEM" && chmod 644 "$CERT_PEM"
+  chmod 600 "$KEY_PEM"; chmod 644 "$CERT_PEM"
   echo "✅ 自签证书生成完成"
 }
 
-# ===================== 下载 TUIC =====================
-check_tuic_server() {
-  [ -x "$TUIC_BIN" ] && echo "✅ 已存在 tuic-server" && return
-  ARCH=$(uname -m)
-  [ "$ARCH" != "x86_64" ] && echo "❌ 暂不支持架构: $ARCH" && exit 1
-  echo "📥 下载 tuic-server..."
-  TUIC_URL="https://github.com/Itsusinn/tuic/releases/download/v1.3.5/tuic-server-x86_64-linux"
-  curl -L -f -o "$TUIC_BIN" "$TUIC_URL"
+# ---------- 下载 tuic-server (musl 版本) ----------
+check_tuic() {
+  [[ -x "$TUIC_BIN" ]] && { echo "✅ 已存在 tuic-server"; return; }
+  echo "📥 下载 tuic-server (musl)..."
+  TUIC_URL="https://github.com/Itsusinn/tuic/releases/download/v1.3.5/tuic-server-x86_64-musl"
+  curl -L -o "$TUIC_BIN" "$TUIC_URL"
   chmod +x "$TUIC_BIN"
   echo "✅ tuic-server 下载完成"
 }
 
-# ===================== 生成配置 =====================
+# ---------- 生成配置 ----------
 generate_config() {
 cat > "$SERVER_TOML" <<EOF
 log_level = "off"
@@ -104,49 +97,54 @@ initial_window = 4194304
 EOF
 }
 
-# ===================== 获取公网IP =====================
-get_server_ip() {
+# ---------- 获取公网 IP ----------
+get_ip() {
   curl -s --connect-timeout 3 https://api.ipify.org || echo "YOUR_SERVER_IP"
 }
 
-# ===================== 生成 TUIC 链接 =====================
+# ---------- 生成 TUIC 链接 ----------
 generate_link() {
-cat > "$LINK_TXT" <<EOF
+  cat > "$LINK_TXT" <<EOF
 tuic://${TUIC_UUID}:${TUIC_PASSWORD}@${1}:${TUIC_PORT}?congestion_control=bbr&alpn=h3&allowInsecure=1&sni=${MASQ_DOMAIN}&udp_relay_mode=native&disable_sni=0&reduce_rtt=1&max_udp_relay_packet_size=8192#TUIC-${1}
 EOF
-echo "📱 TUIC链接已生成: $LINK_TXT"
+  echo "📱 TUIC 链接已生成: $LINK_TXT"
 }
 
-# ===================== 后台守护 =====================
-run_background_loop() {
-  echo "✅ TUIC 服务已启动..."
-  while true; do
-    "$TUIC_BIN" -c "$SERVER_TOML"
-    echo "⚠️ tuic-server 已退出，5秒后重启..."
-    sleep 5
-  done
+# ---------- 卸载 TUIC ----------
+uninstall_tuic() {
+  echo "⚠️ 卸载 TUIC..."
+  pkill -f "$TUIC_BIN" || true
+  rm -f "$TUIC_BIN" "$SERVER_TOML" "$CERT_PEM" "$KEY_PEM" "$LINK_TXT"
+  echo "✅ TUIC 已卸载"
 }
 
-# ===================== 主逻辑 =====================
+# ---------- 后台循环 ----------
+run_loop() {
+  echo "✅ 服务启动，tuic-server 正在运行..."
+  while true; do "$TUIC_BIN" -c "$SERVER_TOML"; echo "⚠️ tuic-server 已退出，5秒后重启..."; sleep 5; done
+}
+
+# ---------- 主函数 ----------
 main() {
-  if ! load_existing_config; then
+  if [[ "${1:-}" == "uninstall" ]]; then uninstall_tuic; exit 0; fi
+
+  if ! load_config; then
     echo "⚙️ 第一次运行，初始化中..."
     read_port "$@"
-    TUIC_UUID=$(uuidgen)
-    TUIC_PASSWORD=$(openssl rand -hex 16)
-    echo "🔑 UUID: $TUIC_UUID"
-    echo "🔑 密码: $TUIC_PASSWORD"
-    echo "🎯 SNI: $MASQ_DOMAIN"
+    TUIC_UUID="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null)"
+    TUIC_PASSWORD="$(openssl rand -hex 16)"
+    echo "🔑 UUID: $TUIC_UUID"; echo "🔑 密码: $TUIC_PASSWORD"; echo "🎯 SNI: ${MASQ_DOMAIN}"
     generate_cert
-    check_tuic_server
+    check_tuic
     generate_config
   else
     generate_cert
-    check_tuic_server
+    check_tuic
   fi
-  IP=$(get_server_ip)
+
+  IP=$(get_ip)
   generate_link "$IP"
-  run_background_loop
+  run_loop
 }
 
 main "$@"
