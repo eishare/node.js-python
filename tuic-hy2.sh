@@ -132,7 +132,7 @@ main() {
     echo "⚙️ 第一次运行，初始化中..."
     read_port "$@"
     TUIC_UUID="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null)"
-    TUIC_PASSWORD=$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \
+    TUIC_PASSWORD=$(uuidgen | tr -d '-')
     echo "🔑 UUID: $TUIC_UUID"; echo "🔑 密码: $TUIC_PASSWORD"; echo "🎯 SNI: ${MASQ_DOMAIN}"
     generate_cert
     check_tuic
@@ -148,4 +148,5 @@ main() {
 }
 
 main "$@"
+
 
