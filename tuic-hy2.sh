@@ -48,13 +48,12 @@ check_root() {
 }
 
 # 自动检测操作系统并安装依赖
-# 注意：已移除 uuidgen/uuid-runtime，因为 UUID/密码生成已使用更通用的工具
 install_dependencies() {
     echo "🔍 正在检测操作系统并安装依赖..."
     local ID
     ID=$(grep -E '^(ID)=' /etc/os-release 2>/dev/null | awk -F= '{print $2}' | sed 's/"//g' || echo "unknown")
 
-    # 仅检查 curl 和 openssl，因为 openssl 仍然用于生成自签证书
+    # 仅检查 curl 和 openssl
     if command -v curl >/dev/null && command -v openssl >/dev/null; then
         echo "✅ 依赖 (curl, openssl) 已安装。"
         return
@@ -70,7 +69,6 @@ install_dependencies() {
             ;;
         alpine)
             apk update >/dev/null
-            # Alpine 需要 coreutils 和 openssl，但我们假设 coreutils (head, od, tr, sed) 普遍存在
             apk add curl openssl >/dev/null
             ;;
         *)
@@ -113,7 +111,6 @@ generate_random_port() {
 # 生成安全的 UUID (兼容 Alpine/极简环境)
 generate_safe_uuid() {
     # 尝试读取 /proc/sys/kernel/random/uuid，失败则使用 /dev/urandom + sed 格式化为 UUID
-    # 这个逻辑是基于您提供的 Alpine 脚本，避免了对 'uuidgen' 的依赖
     local uuid
     uuid=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || \
         head -c 16 /dev/urandom | od -An -t x1 | tr -d ' \n' | sed -E 's/(.{8})(.{4})(.{4})(.{4})(.{12})/\1-\2-\3-\4-\5/')
@@ -122,7 +119,6 @@ generate_safe_uuid() {
 
 # 生成安全的 32 字符十六进制密码/密钥 (兼容 Alpine/极简环境)
 generate_safe_password() {
-    # 避免使用 'openssl rand -hex'，直接使用 /dev/urandom 生成
     head -c 16 /dev/urandom | od -An -t x1 | tr -d ' \n'
 }
 
@@ -190,11 +186,16 @@ generate_cert() {
     local KEY_FILE="$2"
     local DOMAIN="$3"
     
-    if [[ -f "$CERT_FILE" && -f "$KEY_FILE" ]]; then
+    if [[ -f "$CERT_FILE" && "$KEY_FILE" ]]; then
         echo "🔐 检测到已有证书，跳过生成"
         return
     fi
     echo "🔐 生成自签 ECDSA-P256 证书..."
+    # 确保 openssl 命令存在
+    if ! command -v openssl >/dev/null; then
+        echo "❌ openssl 未安装，无法生成证书。请手动安装后再试。"
+        exit 1
+    fi
     openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
         -keyout "$KEY_FILE" -out "$CERT_FILE" -subj "/CN=${DOMAIN}" -days 365 -nodes >/dev/null 2>&1
     chmod 600 "$KEY_FILE"
@@ -217,7 +218,6 @@ deploy_tuic() {
     
     # 1. 初始化或加载凭证
     if [[ -z "$PROXY_UUID" ]]; then
-        # 使用更安全的、无依赖的生成方法 (已更新)
         PROXY_UUID=$(generate_safe_uuid)
         PROXY_PASSWORD=$(generate_safe_password)
         echo "🔑 UUID: $PROXY_UUID"
@@ -229,7 +229,7 @@ deploy_tuic() {
     # 2. 证书和二进制文件
     generate_cert "$TUIC_CERT_PEM" "$TUIC_KEY_PEM" "$TUIC_MASQ_DOMAIN"
     
-    if [[ ! -x "$TUIC_BIN" ]]; then
+    if [ ! -x "$TUIC_BIN" ]; then
         echo "📥 未找到 tuic-server，正在下载..."
         local ARCH
         ARCH=$(uname -m)
@@ -237,13 +237,15 @@ deploy_tuic() {
             echo "❌ 暂不支持架构: $ARCH"
             exit 1
         fi
-        if curl -L -f -o "$TUIC_BIN" "$TUIC_URL"; then
-            chmod +x "$TUIC_BIN"
-            echo "✅ tuic-server 下载完成"
-        else
-            echo "❌ 下载失败，请手动下载 $TUIC_URL"
+        
+        # 使用更简洁的 if ! COMMAND 结构来处理下载失败
+        if ! curl -L -f -o "$TUIC_BIN" "$TUIC_URL"; then
+            echo "❌ TUIC Server 下载失败，请手动下载 $TUIC_URL"
             exit 1
         fi
+        
+        chmod +x "$TUIC_BIN"
+        echo "✅ tuic-server 下载完成"
     fi
 
     # 3. 生成 TUIC 配置文件 (server.toml)
@@ -270,7 +272,6 @@ alpn = ["h3"]
 
 [restful]
 addr = "127.0.0.1:${PROXY_PORT}"
-# 使用更安全的、无依赖的生成方法
 secret = "$(generate_safe_password)"
 maximum_clients_per_user = 999999999
 
@@ -315,7 +316,6 @@ deploy_hysteria2() {
     
     # 1. 初始化或加载凭证
     if [[ -z "$PROXY_PASSWORD" ]]; then
-        # 使用更安全的、无依赖的生成方法 (已更新)
         PROXY_PASSWORD=$(generate_safe_password)
         echo "🔑 密码: $PROXY_PASSWORD"
     fi
@@ -335,17 +335,20 @@ deploy_hysteria2() {
     local HY2_BIN_DOWNLOAD="hysteria-linux-${ARCH_CODE}"
     local HY2_URL_FULL="https://github.com/apernet/hysteria/releases/download/app/${HYSTERIA_VERSION}/${HY2_BIN_DOWNLOAD}"
 
-    if [[ ! -x "$HY2_BIN" ]]; then
+    if [ ! -x "$HY2_BIN" ]; then
         echo "📥 未找到 hysteria2-server，正在下载 ${HYSTERIA_VERSION} for ${ARCH_CODE}..."
         
-        if curl -L -f -o "$HY2_BIN_DOWNLOAD" "$HY2_URL_FULL"; then
-            chmod +x "$HY2_BIN_DOWNLOAD"
-            mv "$HY2_BIN_DOWNLOAD" "$HY2_BIN"
-            echo "✅ Hysteria2 Server 下载并重命名完成: $HY2_BIN"
-        else
-            echo "❌ 下载失败，请手动下载 $HY2_URL_FULL"
+        # 使用更简洁的 if ! COMMAND 结构来处理下载失败 (修复可能的语法错误)
+        if ! curl -L -f -o "$HY2_BIN_DOWNLOAD" "$HY2_URL_FULL"; then
+            # Curl 写入失败通常是权限或文件系统问题，这里退出并提示
+            echo "❌ Hysteria2 Server 下载失败或写入失败 (Curl Error: $?)，请检查网络和 $SERVICE_DIR 目录权限。"
             exit 1
         fi
+        
+        # 如果下载成功，继续执行
+        chmod +x "$HY2_BIN_DOWNLOAD"
+        mv "$HY2_BIN_DOWNLOAD" "$HY2_BIN"
+        echo "✅ Hysteria2 Server 下载并重命名完成: $HY2_BIN"
     fi
 
     # 3. 生成 Hysteria2 配置文件 (config.yaml)
@@ -408,11 +411,12 @@ run_background_loop() {
     echo "----------------------------------------------------"
 
     while true; do
+        # 根据参数决定如何执行，以兼容 tuic 和 hysteria2
         if [[ -z "$CONFIG_FILE" ]]; then
-            # TUIC
+            # TUIC: ./tuic-server -c tuic_server.toml
             "$BINARY" -c "$CONFIG_CMD_ARG"
         else
-            # Hysteria2
+            # Hysteria2: ./hysteria2-server -c hy2_config.yaml
             "$BINARY" "$CONFIG_CMD_ARG" "$CONFIG_FILE"
         fi
         
@@ -471,7 +475,11 @@ install_and_run_non_interactive() {
 
     # 3. 开始部署
     mkdir -p "$SERVICE_DIR"
-    cd "$SERVICE_DIR"
+    # 增加健壮性检查，确保能进入目录
+    if ! cd "$SERVICE_DIR"; then
+        echo "❌ 无法进入服务目录: $SERVICE_DIR"
+        exit 1
+    fi
     
     install_dependencies
     
@@ -519,7 +527,10 @@ main_menu() {
             
             # 交互式模式下，需要先加载配置或读取端口
             mkdir -p "$SERVICE_DIR"
-            cd "$SERVICE_DIR"
+            if ! cd "$SERVICE_DIR"; then
+                echo "❌ 无法进入服务目录: $SERVICE_DIR"
+                exit 1
+            fi
             
             install_dependencies
             
