@@ -10,6 +10,41 @@ KEY_PEM="tuic-key.pem"
 LINK_TXT="tuic_link.txt"
 TUIC_BIN="./tuic-server"
 
+# ===================== 检查并安装依赖 =====================
+check_dependencies() {
+  echo "🔍 检查必要依赖..."
+  local deps=("openssl" "curl")
+  local missing_deps=()
+
+  for dep in "${deps[@]}"; do
+    if ! command -v "$dep" >/dev/null 2>&1; then
+      missing_deps+=("$dep")
+    fi
+  done
+
+  if [[ ${#missing_deps[@]} -gt 0 ]]; then
+    echo "❌ 缺少依赖: ${missing_deps[*]}"
+    echo "📦 正在安装缺失的依赖..."
+    if ! apk add --no-cache "${missing_deps[@]}" >/dev/null 2>&1; then
+      echo "❌ 无法安装依赖: ${missing_deps[*]}，请手动安装"
+      exit 1
+    fi
+    echo "✅ 依赖安装完成"
+  else
+    echo "✅ 所有依赖已满足"
+  fi
+
+  # 检查 uuidgen（来自 util-linux）
+  if ! command -v uuidgen >/dev/null 2>&1; then
+    echo "📦 安装 util-linux 以提供 uuidgen..."
+    if ! apk add --no-cache util-linux >/dev/null 2>&1; then
+      echo "❌ 无法安装 util-linux，请手动安装"
+      exit 1
+    fi
+    echo "✅ util-linux 安装完成"
+  fi
+}
+
 # ===================== 输入端口或读取环境变量 =====================
 read_port() {
   if [[ $# -ge 1 && -n "${1:-}" ]]; then
@@ -164,10 +199,11 @@ run_background_loop() {
 
 # ===================== 主逻辑 =====================
 main() {
+  check_dependencies
   if ! load_existing_config; then
     echo "⚙️ 第一次运行，开始初始化..."
     read_port "$@"
-    TUIC_UUID="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null)"
+    TUIC_UUID="$(uuidgen)"
     TUIC_PASSWORD="$(openssl rand -hex 16)"
     echo "🔑 UUID: $TUIC_UUID"
     echo "🔑 密码: $TUIC_PASSWORD"
