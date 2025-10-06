@@ -1,5 +1,5 @@
 #!/bin/bash
-# TUIC v5 over QUIC 自动部署（Alpine 适配）
+# TUIC v5 over QUIC 自动部署（Alpine 适配，openssl 可选）
 set -euo pipefail
 IFS=$'\n\t'
 
@@ -13,7 +13,7 @@ TUIC_BIN="./tuic-server"
 # ---------- 输入端口 ----------
 read_port() {
   if [[ $# -ge 1 && -n "${1:-}" ]]; then
-    TUIC_PORT="$1"; echo "✅ 从命令行参数读取 TUIC 端口: $TUIC_PORT"; return
+    TUIC_PORT="$1"; echo "✅ 从命令行读取 TUIC 端口: $TUIC_PORT"; return
   fi
   if [[ -n "${SERVER_PORT:-}" ]]; then
     TUIC_PORT="$SERVER_PORT"; echo "✅ 从环境变量读取 TUIC 端口: $TUIC_PORT"; return
@@ -79,7 +79,7 @@ alpn = ["h3"]
 
 [restful]
 addr = "127.0.0.1:${TUIC_PORT}"
-secret = "$(openssl rand -hex 16)"
+secret = "$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 maximum_clients_per_user = 999999999
 
 [quic]
@@ -132,7 +132,7 @@ main() {
     echo "⚙️ 第一次运行，初始化中..."
     read_port "$@"
     TUIC_UUID="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null)"
-    TUIC_PASSWORD=$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')
+    TUIC_PASSWORD="$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
     echo "🔑 UUID: $TUIC_UUID"; echo "🔑 密码: $TUIC_PASSWORD"; echo "🎯 SNI: ${MASQ_DOMAIN}"
     generate_cert
     check_tuic
@@ -148,4 +148,3 @@ main() {
 }
 
 main "$@"
-
