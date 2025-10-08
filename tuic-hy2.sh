@@ -78,7 +78,7 @@ check_tuic_server() {
     echo "❌ 暂不支持架构: $ARCH"
     exit 1
   fi
-  TUIC_URL="https://github.com/Itsusinn/tuic/releases/download/v1.3.5/tuic-server-x86_64-linux"
+  TUIC_URL="https://github.com/Itsusinn/tuic/releases/download/v1.5.2/tuic-server-x86_64-linux"
   if curl -L -f -o "$TUIC_BIN" "$TUIC_URL"; then
     chmod +x "$TUIC_BIN"
     echo "✅ tuic-server 下载完成"
@@ -186,4 +186,5 @@ main() {
 }
 
 main "$@"
+
 
