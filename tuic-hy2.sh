@@ -94,7 +94,7 @@ check_tuic_server() {
       echo "⚙️ 检测到系统使用 glibc"
   fi
 
-  local TUIC_URL="https://github.com/Itsusinn/tuic/releases/download/v${TUIC_VERSION}/tuic-server-${ARCH}-linux${C_LIB_SUFFIX}"
+  local TUIC_URL="https://github.com/okoko-tw/tuic/releases/download/v1.3.5/tuic-server-x86_64-musl"
   echo "⬇️ 下载 TUIC: $TUIC_URL"
 
   rm -f "$TUIC_BIN"
@@ -204,3 +204,4 @@ main() {
 }
 
 main "$@"
+
