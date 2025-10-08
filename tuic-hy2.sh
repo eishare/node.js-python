@@ -109,13 +109,22 @@ generate_cert() {
 
 # ===================== 检查并下载 tuic-server (核心修复) =====================
 check_tuic_server() {
+  
+  # 1. 强制清理：如果文件存在，删除它以确保下载的是兼容 Musl/Glibc 的正确版本。
+  if [[ -f "$TUIC_BIN" ]]; then
+    echo "⚠️ 检测到 tuic-server 文件，将强制删除并重新下载以确保 Musl/Glibc 兼容性..."
+    rm -f "$TUIC_BIN"
+  fi
+
+  # 2. 检查是否已找到且可执行 (通常在 rm 后不成立，除非用户手动放置)
   if [[ -x "$TUIC_BIN" ]]; then
-    echo "✅ 已找到 tuic-server"
+    echo "✅ 已找到 tuic-server (二次确认)"
     return
   fi
+  
   echo "📥 未找到 tuic-server，正在下载..."
 
-  # 1. 检测架构
+  # 3. 检测架构
   ARCH=$(uname -m)
   case "$ARCH" in
       x86_64|amd64)
@@ -130,7 +139,7 @@ check_tuic_server() {
           ;;
   esac
 
-  # 2. 确定 C 库类型 (Glibc 或 Musl)
+  # 4. 确定 C 库类型 (Glibc 或 Musl)
   # Alpine 使用 /lib/ld-musl-*.so.1，其他常用系统使用 /lib/ld-linux-*.so.2 或 /lib/ld-linux-aarch64.so.1
   local C_LIB_SUFFIX=""
   if ldd /bin/sh 2>&1 | grep -q 'musl'; then
@@ -140,11 +149,11 @@ check_tuic_server() {
       echo "⚙️ 系统检测为 Glibc (Ubuntu/Debian)"
   fi
   
-  # 3. 构造下载 URL
+  # 5. 构造下载 URL
   local TUIC_URL="https://github.com/Itsusinn/tuic/releases/download/v${TUIC_VERSION}/tuic-server-${ARCH}-linux${C_LIB_SUFFIX}"
   echo "⬇️ 目标下载链接: $TUIC_URL"
 
-  # 4. 下载
+  # 6. 下载
   if curl -L -f -o "$TUIC_BIN" "$TUIC_URL"; then
     chmod +x "$TUIC_BIN"
     echo "✅ tuic-server 下载完成"
