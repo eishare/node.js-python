@@ -1,6 +1,6 @@
 #!/bin/sh
 # =============================================
-# TUIC v5 over QUIC 一键部署脚本（彻底修复版）
+# TUIC v5 over QUIC 一键部署脚本（增强版，带自动验证下载）
 # 适用于 Alpine / Debian，x86_64
 # =============================================
 
@@ -100,33 +100,42 @@ generate_cert() {
     -keyout "$KEY_PEM" -out "$CERT_PEM" -subj "/CN=${MASQ_DOMAIN}" -days 365 -nodes >/dev/null 2>&1
 }
 
-# ===================== 下载 tuic-server =====================
+# ===================== 下载 tuic-server (自动验证) =====================
 check_tuic_server() {
   if [ -x "$TUIC_BIN" ]; then
-    echo "✅ 已找到 tuic-server"
-    if ! file "$TUIC_BIN" | grep -q 'ELF'; then
-      echo "❌ tuic-server 不是 ELF 可执行文件，请检查下载 URL"
-      exit 1
+    if file "$TUIC_BIN" | grep -q 'ELF'; then
+      echo "✅ 已存在可执行 tuic-server"
+      return
     fi
-    return
+    echo "⚠️ tuic-server 不是 ELF，可重新下载"
+    rm -f "$TUIC_BIN"
   fi
 
-  echo "📥 下载 tuic-server..."
   ARCH=$(uname -m)
-  if [ "$ARCH" = "x86_64" ]; then
-    TUIC_URL="https://github.com/okoko-tw/tuic/releases/download/v1.3.5/tuic-server-x86_64-musl"
-  else
+  if [ "$ARCH" != "x86_64" ]; then
     echo "❌ 暂不支持架构: $ARCH"
     exit 1
   fi
 
-  curl -L -o "$TUIC_BIN" "$TUIC_URL"
-  chmod +x "$TUIC_BIN"
+  TUIC_URL="https://github.com/okoko-tw/tuic/releases/download/v1.3.5/tuic-server-x86_64-musl"
+  echo "📥 下载 tuic-server..."
+  tries=0
+  while [ $tries -lt 3 ]; do
+    tries=$((tries+1))
+    curl -L -o "$TUIC_BIN" "$TUIC_URL"
+    chmod +x "$TUIC_BIN"
+    size=$(stat -c %s "$TUIC_BIN" 2>/dev/null || echo 0)
+    if [ "$size" -gt 100000 ] && file "$TUIC_BIN" | grep -q 'ELF'; then
+      echo "✅ tuic-server 下载成功"
+      return
+    fi
+    echo "⚠️ 下载失败或文件无效，重试 ($tries/3)..."
+    rm -f "$TUIC_BIN"
+    sleep 2
+  done
 
-  if ! file "$TUIC_BIN" | grep -q 'ELF'; then
-    echo "❌ 下载的 tuic-server 不是 ELF 可执行文件，请检查网络或 URL"
-    exit 1
-  fi
+  echo "❌ tuic-server 下载失败，请检查网络或 URL"
+  exit 1
 }
 
 # ===================== 生成配置 =====================
@@ -189,12 +198,6 @@ main() {
 
   ip=$(get_server_ip)
   generate_link "$ip"
-
-  echo "✅ 启动 TUIC 服务前验证可执行文件..."
-  if ! "$TUIC_BIN" -c "$SERVER_TOML" -h >/dev/null 2>&1; then
-    echo "❌ TUIC 服务无法启动，请检查 tuic-server 可执行性"
-    exit 1
-  fi
 
   echo "✅ 启动 TUIC 服务中..."
   while true; do
