@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================
-# 🌀 TUIC v1.5.2 自动部署（支持 musl / glibc，Claw Cloud 持久化版）
-# 修复下载 404 问题，自动选择正确文件名
+# 🌀 TUIC v1.5.2 自动部署脚本（适配 Alpine / musl）
+# 适合爪云 Claw Cloud LXC 容器，支持挂载持久化
 # =============================================================
 set -euo pipefail
 IFS=$'\n\t'
@@ -21,7 +21,7 @@ elif command -v apt >/dev/null 2>&1; then
   apt update -qq >/dev/null
   apt install -y curl openssl uuid-runtime >/dev/null
 else
-  echo "⚠️ 未检测到支持的包管理器"
+  echo "⚠️ 未检测到支持的包管理器，请手动安装 curl openssl"
 fi
 echo "✅ 依赖检查完成"
 echo "✅ 使用端口: $PORT"
@@ -43,28 +43,23 @@ else
   echo "✅ 检测到已有证书，跳过生成"
 fi
 
-# 检测架构和 libc
+# 检测架构
 ARCH=$(uname -m)
-case "$ARCH" in
-  x86_64|amd64) ARCH="x86_64" ;;
-  aarch64|arm64) ARCH="aarch64" ;;
-  *) echo "❌ 不支持的架构: $ARCH"; exit 1 ;;
-esac
-
-if ldd /bin/sh 2>&1 | grep -q musl; then
-  LIB="unknown-linux-musl"
-  echo "⚙️ 检测到系统使用 musl (Alpine)"
+if [[ "$ARCH" == "x86_64" || "$ARCH" == "amd64" ]]; then
+  FILE="tuic-server-x86_64-linux-musl"
+elif [[ "$ARCH" == "aarch64" || "$ARCH" == "arm64" ]]; then
+  FILE="tuic-server-aarch64-linux-musl"
 else
-  LIB="unknown-linux-gnu"
-  echo "⚙️ 检测到系统使用 glibc (Debian/Ubuntu)"
+  echo "❌ 不支持的架构: $ARCH"
+  exit 1
 fi
 
-# 修正下载地址
-TUIC_URL="https://github.com/Itsusinn/tuic/releases/download/v${VERSION}/tuic-server-${ARCH}-${LIB}"
+# 下载 TUIC
+TUIC_URL="https://github.com/Itsusinn/tuic/releases/download/v${VERSION}/${FILE}"
 echo "⬇️ 下载 TUIC: $TUIC_URL"
 
 if ! curl -Lf -o tuic-server "$TUIC_URL"; then
-  echo "❌ 下载失败，请手动检查该版本的可用文件名"
+  echo "❌ 下载失败，请检查网络或手动下载 $TUIC_URL"
   exit 1
 fi
 chmod +x tuic-server
@@ -101,8 +96,9 @@ echo "✅ 配置文件生成完成"
 # 获取公网 IP
 SERVER_IP=$(curl -s --connect-timeout 5 https://api.ipify.org || echo "YOUR_SERVER_IP")
 
-# 输出连接信息
-echo "tuic://${UUID}:${PASS}@${SERVER_IP}:${PORT}?congestion_control=bbr&alpn=h3&allowInsecure=1&sni=${MASQ_DOMAIN}&udp_relay_mode=native&disable_sni=0&reduce_rtt=1#TUIC-${SERVER_IP}" | tee tuic_link.txt
+# 输出链接
+LINK="tuic://${UUID}:${PASS}@${SERVER_IP}:${PORT}?congestion_control=bbr&alpn=h3&allowInsecure=1&sni=${MASQ_DOMAIN}&udp_relay_mode=native&disable_sni=0&reduce_rtt=1#TUIC-${SERVER_IP}"
+echo "$LINK" | tee tuic_link.txt
 
 # 启动脚本
 cat > start.sh <<EOF
@@ -120,5 +116,3 @@ echo "🎉 部署完成！"
 echo "📄 配置: ${INSTALL_DIR}/server.toml"
 echo "🔗 链接: ${INSTALL_DIR}/tuic_link.txt"
 echo "⚙️ 启动脚本: ${INSTALL_DIR}/start.sh"
-
-
