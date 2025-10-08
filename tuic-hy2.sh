@@ -10,6 +10,24 @@ KEY_PEM="tuic-key.pem"
 LINK_TXT="tuic_link.txt"
 TUIC_BIN="./tuic-server"
 
+# ===================== 检测系统并安装 glibc（仅 Alpine） =====================
+check_alpine_glibc() {
+  if [[ -f /etc/alpine-release ]]; then
+    echo "🐧 检测到 Alpine Linux，准备安装 glibc 兼容层..."
+    apk add --no-cache wget ca-certificates >/dev/null 2>&1 || true
+    wget -q -O /etc/apk/keys/sgerrand.rsa.pub https://alpine-pkgs.sgerrand.com/sgerrand.rsa.pub
+    wget -q -O glibc.apk https://github.com/sgerrand/alpine-pkg-glibc/releases/latest/download/glibc-2.35-r0.apk
+    if apk add --no-cache glibc.apk >/dev/null 2>&1; then
+      echo "✅ glibc 安装完成"
+      rm -f glibc.apk
+    else
+      echo "⚠️ glibc 安装失败，请检查网络或手动安装"
+    fi
+  else
+    echo "✅ 非 Alpine 系统，无需安装 glibc"
+  fi
+}
+
 # ===================== 检查并安装依赖 =====================
 check_dependencies() {
   echo "🔍 检查必要依赖..."
@@ -25,8 +43,14 @@ check_dependencies() {
   if [[ ${#missing_deps[@]} -gt 0 ]]; then
     echo "❌ 缺少依赖: ${missing_deps[*]}"
     echo "📦 正在安装缺失的依赖..."
-    if ! apk add --no-cache "${missing_deps[@]}" >/dev/null 2>&1; then
-      echo "❌ 无法安装依赖: ${missing_deps[*]}，请手动安装"
+    if command -v apk >/dev/null 2>&1; then
+      apk add --no-cache "${missing_deps[@]}" >/dev/null 2>&1
+    elif command -v apt >/dev/null 2>&1; then
+      apt update >/dev/null 2>&1 && apt install -y "${missing_deps[@]}" >/dev/null 2>&1
+    elif command -v yum >/dev/null 2>&1; then
+      yum install -y "${missing_deps[@]}" >/dev/null 2>&1
+    else
+      echo "❌ 无法自动安装依赖，请手动安装: ${missing_deps[*]}"
       exit 1
     fi
     echo "✅ 依赖安装完成"
@@ -34,12 +58,15 @@ check_dependencies() {
     echo "✅ 所有依赖已满足"
   fi
 
-  # 检查 uuidgen（来自 util-linux）
+  # 检查 uuidgen
   if ! command -v uuidgen >/dev/null 2>&1; then
     echo "📦 安装 util-linux 以提供 uuidgen..."
-    if ! apk add --no-cache util-linux >/dev/null 2>&1; then
-      echo "❌ 无法安装 util-linux，请手动安装"
-      exit 1
+    if command -v apk >/dev/null 2>&1; then
+      apk add --no-cache util-linux >/dev/null 2>&1
+    elif command -v apt >/dev/null 2>&1; then
+      apt install -y util-linux >/dev/null 2>&1
+    elif command -v yum >/dev/null 2>&1; then
+      yum install -y util-linux >/dev/null 2>&1
     fi
     echo "✅ util-linux 安装完成"
   fi
@@ -163,63 +190,4 @@ max_idle_time = "20s"
 
 [quic.congestion_control]
 controller = "bbr"
-initial_window = 4194304
-EOF
-}
-
-# ===================== 获取公网 IP =====================
-get_server_ip() {
-  ip=$(curl -s --connect-timeout 3 https://api.ipify.org || true)
-  echo "${ip:-YOUR_SERVER_IP}"
-}
-
-# ===================== 生成 TUIC 链接 =====================
-generate_link() {
-  local ip="$1"
-  cat > "$LINK_TXT" <<EOF
-tuic://${TUIC_UUID}:${TUIC_PASSWORD}@${ip}:${TUIC_PORT}?congestion_control=bbr&alpn=h3&allowInsecure=1&sni=${MASQ_DOMAIN}&udp_relay_mode=native&disable_sni=0&reduce_rtt=1&max_udp_relay_packet_size=8192#TUIC-${ip}
-EOF
-
-  echo ""
-  echo "📱 TUIC 链接已生成并保存到 $LINK_TXT"
-  echo "🔗 链接内容："
-  cat "$LINK_TXT"
-  echo ""
-}
-
-# ===================== 后台循环守护 =====================
-run_background_loop() {
-  echo "✅ 服务已启动，tuic-server 正在运行..."
-  while true; do
-    "$TUIC_BIN" -c "$SERVER_TOML"
-    echo "⚠️ tuic-server 已退出，5秒后重启..."
-    sleep 5
-  done
-}
-
-# ===================== 主逻辑 =====================
-main() {
-  check_dependencies
-  if ! load_existing_config; then
-    echo "⚙️ 第一次运行，开始初始化..."
-    read_port "$@"
-    TUIC_UUID="$(uuidgen)"
-    TUIC_PASSWORD="$(openssl rand -hex 16)"
-    echo "🔑 UUID: $TUIC_UUID"
-    echo "🔑 密码: $TUIC_PASSWORD"
-    echo "🎯 SNI: ${MASQ_DOMAIN}"
-    generate_cert
-    check_tuic_server
-    generate_config
-  else
-    generate_cert
-    check_tuic_server
-  fi
-
-  ip="$(get_server_ip)"
-  generate_link "$ip"
-  run_background_loop
-}
-
-main "$@"
-
+initial
