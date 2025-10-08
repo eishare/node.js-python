@@ -1,6 +1,6 @@
 #!/bin/sh
 # =============================================
-# TUIC v5 over QUIC 一键部署脚本（增强版）
+# TUIC v5 over QUIC 一键部署脚本（增强版修复）
 # 自动检测 curl/bash，下载 tuic-server 并验证 ELF 二进制
 # 支持 Alpine / Debian，x86_64 架构
 # =============================================
@@ -47,18 +47,23 @@ check_shell_deps() {
 # ===================== 检查系统依赖 =====================
 check_dependencies() {
   echo "🔍 检查系统环境与依赖..."
-  local deps="openssl grep sed coreutils uuidgen"
-  local missing=""
+  deps="openssl grep sed coreutils uuidgen"
+  missing=""
   for dep in $deps; do
     command -v "$dep" >/dev/null 2>&1 || missing="$missing $dep"
   done
 
   if [ -f /etc/alpine-release ]; then
     OS_TYPE="alpine"
-    if [ -n "$missing" ]; then apk add --no-cache $missing >/dev/null 2>&1; fi
+    if [ -n "$missing" ]; then
+      apk add --no-cache $missing >/dev/null 2>&1
+    fi
   elif [ -f /etc/debian_version ]; then
     OS_TYPE="debian"
-    if [ -n "$missing" ]; then apt-get update -y >/dev/null 2>&1 && apt-get install -y $missing >/dev/null 2>&1; fi
+    if [ -n "$missing" ]; then
+      apt-get update -y >/dev/null 2>&1
+      apt-get install -y $missing >/dev/null 2>&1
+    fi
   else
     OS_TYPE="unknown"
   fi
@@ -75,6 +80,7 @@ read_port() {
     read TUIC_PORT
   fi
 }
+
 # ===================== 加载已有配置 =====================
 load_existing_config() {
   if [ -f "$SERVER_TOML" ]; then
@@ -202,4 +208,3 @@ main() {
 }
 
 main "$@"
-
