@@ -1,98 +1,149 @@
-#!/bin/sh
+#!/usr/bin/env bash
+# -*- coding: utf-8 -*-
+# Hysteria2 极简部署脚本（支持命令行端口参数 + 默认跳过证书验证）
+# 适用于超低内存环境（32-64MB）
+
 set -e
 
-echo "🔍 检查系统环境与依赖..."
-
-# 安装基础依赖
-if command -v apk >/dev/null 2>&1; then
-  apk add --no-cache curl bash openssl coreutils util-linux >/dev/null 2>&1
-  OS="alpine"
-else
-  apt-get update -y >/dev/null 2>&1
-  apt-get install -y curl bash openssl uuid-runtime >/dev/null 2>&1
-  OS="debian"
-fi
-
-WORKDIR="/data/tuic"
-mkdir -p "$WORKDIR"
-cd "$WORKDIR"
-
-PORT="${1:-443}"
-UUID=$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid)
-PASSWORD=$(openssl rand -hex 16)
+# ---------- 默认配置 ----------
+HYSTERIA_VERSION="v2.6.4"
+DEFAULT_PORT=22222         # 若未提供参数则使用此端口
+AUTH_PASSWORD="ieshare2025"   # 建议修改为复杂密码
+CERT_FILE="cert.pem"
+KEY_FILE="key.pem"
 SNI="www.bing.com"
+ALPN="h3"
+# ------------------------------
 
-echo "✅ 使用端口: $PORT"
-echo "🔑 UUID: $UUID"
-echo "🔑 密码: $PASSWORD"
-echo "🎯 SNI: $SNI"
+echo "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
+echo "Hysteria2 极简部署脚本（Shell 版）"
+echo "支持命令行端口参数，如：bash hysteria2.sh 443"
+echo "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
 
-# 生成证书
-if [ ! -f "$WORKDIR/cert.pem" ]; then
-  echo "🔐 生成自签证书..."
-  openssl ecparam -genkey -name prime256v1 -out "$WORKDIR/private.key"
-  openssl req -new -x509 -days 3650 -key "$WORKDIR/private.key" -out "$WORKDIR/cert.pem" -subj "/CN=$SNI"
+# ---------- 获取端口 ----------
+if [[ $# -ge 1 && -n "${1:-}" ]]; then
+    SERVER_PORT="$1"
+    echo "✅ 使用命令行指定端口: $SERVER_PORT"
 else
-  echo "🔐 已存在证书，跳过生成"
+    SERVER_PORT="${SERVER_PORT:-$DEFAULT_PORT}"
+    echo "⚙️ 未提供端口参数，使用默认端口: $SERVER_PORT"
 fi
 
-# 检测系统架构
-ARCH=$(uname -m)
-case "$ARCH" in
-  x86_64)
-    TUIC_FILE="tuic-server-x86_64-unknown-linux-musl"
-    ;;
-  aarch64|arm64)
-    TUIC_FILE="tuic-server-aarch64-unknown-linux-musl"
-    ;;
-  *)
-    echo "❌ 不支持的架构: $ARCH"
-    exit 1
-    ;;
-esac
+# ---------- 检测架构 ----------
+arch_name() {
+    local machine
+    machine=$(uname -m | tr '[:upper:]' '[:lower:]')
+    if [[ "$machine" == *"arm64"* ]] || [[ "$machine" == *"aarch64"* ]]; then
+        echo "arm64"
+    elif [[ "$machine" == *"x86_64"* ]] || [[ "$machine" == *"amd64"* ]]; then
+        echo "amd64"
+    else
+        echo ""
+    fi
+}
 
-TUIC_URL="https://github.com/EAimTY/tuic/releases/download/0.8.5/${TUIC_FILE}"
-
-echo "📥 下载 TUIC (${TUIC_FILE})..."
-curl -L -o tuic-server "$TUIC_URL"
-chmod +x tuic-server
-
-if ! ./tuic-server -v >/dev/null 2>&1; then
-  echo "❌ TUIC 无法执行，请检查架构或系统环境"
+ARCH=$(arch_name)
+if [ -z "$ARCH" ]; then
+  echo "❌ 无法识别 CPU 架构: $(uname -m)"
   exit 1
 fi
 
-# 生成配置文件
-cat > "$WORKDIR/config.json" <<EOF
-{
-  "server": "[::]:$PORT",
-  "users": {
-    "$UUID": "$PASSWORD"
-  },
-  "certificate": "$WORKDIR/cert.pem",
-  "private_key": "$WORKDIR/private.key",
-  "congestion_control": "bbr",
-  "alpn": ["h3"],
-  "udp_relay_mode": "native",
-  "log_level": "warn"
+BIN_NAME="hysteria-linux-${ARCH}"
+BIN_PATH="./${BIN_NAME}"
+
+# ---------- 下载二进制 ----------
+download_binary() {
+    if [ -f "$BIN_PATH" ]; then
+        echo "✅ 二进制已存在，跳过下载。"
+        return
+    fi
+    URL="https://github.com/apernet/hysteria/releases/download/app/${HYSTERIA_VERSION}/${BIN_NAME}"
+    echo "⏳ 下载: $URL"
+    curl -L --retry 3 --connect-timeout 30 -o "$BIN_PATH" "$URL"
+    chmod +x "$BIN_PATH"
+    echo "✅ 下载完成并设置可执行: $BIN_PATH"
 }
+
+# ---------- 生成证书 ----------
+ensure_cert() {
+    if [ -f "$CERT_FILE" ] && [ -f "$KEY_FILE" ]; then
+        echo "✅ 发现证书，使用现有 cert/key。"
+        return
+    fi
+    echo "🔑 未发现证书，使用 openssl 生成自签证书（prime256v1）..."
+    openssl req -x509 -nodes -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+        -days 3650 -keyout "$KEY_FILE" -out "$CERT_FILE" -subj "/CN=${SNI}"
+    echo "✅ 证书生成成功。"
+}
+
+# ---------- 写配置文件 ----------
+write_config() {
+cat > server.yaml <<EOF
+listen: ":${SERVER_PORT}"
+tls:
+  cert: "$(pwd)/${CERT_FILE}"
+  key: "$(pwd)/${KEY_FILE}"
+  alpn:
+    - "${ALPN}"
+auth:
+  type: "password"
+  password: "${AUTH_PASSWORD}"
+bandwidth:
+  up: "200mbps"
+  down: "200mbps"
+quic:
+  max_idle_timeout: "10s"
+  max_concurrent_streams: 4
+  initial_stream_receive_window: 65536
+  max_stream_receive_window: 131072
+  initial_conn_receive_window: 131072
+  max_conn_receive_window: 262144
 EOF
+    echo "✅ 写入配置 server.yaml（端口=${SERVER_PORT}, SNI=${SNI}, ALPN=${ALPN}）。"
+}
 
-# 获取公网 IP
-IP=$(curl -s ipv4.icanhazip.com || echo "127.0.0.1")
+# ---------- 获取服务器 IP ----------
+get_server_ip() {
+    IP=$(curl -s --max-time 10 https://api.ipify.org || echo "YOUR_SERVER_IP")
+    echo "$IP"
+}
 
-LINK="tuic://${UUID}:${PASSWORD}@${IP}:${PORT}?congestion_control=bbr&alpn=h3&sni=$SNI&udp_relay_mode=native&allowInsecure=1#TUIC-${IP}"
-echo "$LINK" > "$WORKDIR/tuic_link.txt"
+# ---------- 打印连接信息 ----------
+print_connection_info() {
+    local IP="$1"
+    echo "🎉 Hysteria2 部署成功！（极简优化版）"
+    echo "=========================================================================="
+    echo "📋 服务器信息:"
+    echo "   🌐 IP地址: $IP"
+    echo "   🔌 端口: $SERVER_PORT"
+    echo "   🔑 密码: $AUTH_PASSWORD"
+    echo ""
+    echo "📱 节点链接（SNI=${SNI}, ALPN=${ALPN}）:"
+    echo "hysteria2://${AUTH_PASSWORD}@${IP}:${SERVER_PORT}?sni=${SNI}&alpn=${ALPN}#Hy2-Bing"
+    echo ""
+    echo "📄 客户端配置文件:"
+    echo "server: ${IP}:${SERVER_PORT}"
+    echo "auth: ${AUTH_PASSWORD}"
+    echo "tls:"
+    echo "  sni: ${SNI}"
+    echo "  alpn: [\"${ALPN}\"]"
+    echo "  insecure: true"
+    echo "socks5:"
+    echo "  listen: 127.0.0.1:1080"
+    echo "http:"
+    echo "  listen: 127.0.0.1:8080"
+    echo "=========================================================================="
+}
 
-echo "📱 TUIC 链接: $LINK"
-echo "🚀 启动 TUIC 服务..."
+# ---------- 主逻辑 ----------
+main() {
+    download_binary
+    ensure_cert
+    write_config
+    SERVER_IP=$(get_server_ip)
+    print_connection_info "$SERVER_IP"
+    echo "🚀 启动 Hysteria2 服务器..."
+    exec "$BIN_PATH" server -c server.yaml
+}
 
-# 启动 TUIC 服务
-nohup ./tuic-server -c config.json >/dev/null 2>&1 &
-sleep 2
-
-if pgrep -x tuic-server >/dev/null 2>&1; then
-  echo "✅ 启动成功，TUIC 正在运行中..."
-else
-  echo "❌ 启动失败，请检查系统是否支持执行二进制文件"
-fi
+main "$@"
