@@ -1,85 +1,59 @@
 #!/bin/bash
-# TUIC v5 over QUIC 自动部署脚本
-# 兼容：Alpine (使用 Musl 版本), Ubuntu/Debian (使用 Glibc 版本)
+# TUIC v5 over QUIC 自动部署脚本（兼容 Alpine / Debian / Ubuntu）
+# ✅ 支持 TUIC v1.5.x（已修复 congestion_control 错误）
+# ✅ 自动检测 musl/glibc 并下载正确二进制
+# ✅ 自动生成证书 + 配置文件 + TUIC 链接
+# ✅ 支持一键启动、自动重启守护
+
 set -euo pipefail
 IFS=$'\n\t'
 
 # ===================== 全局配置 =====================
-MASQ_DOMAIN="www.bing.com"    # 固定伪装域名
+MASQ_DOMAIN="www.bing.com"     # SNI 伪装域名
 SERVER_TOML="server.toml"
 CERT_PEM="tuic-cert.pem"
 KEY_PEM="tuic-key.pem"
 LINK_TXT="tuic_link.txt"
 TUIC_BIN="./tuic-server"
-TUIC_VERSION="1.5.2"
+TUIC_VERSION="1.5.9"           # 🔧 版本更新为最新
+# ====================================================
 
-# ----------------------------------------------------
-
-# 检查系统类型并安装依赖
+# ---------- 系统依赖 ----------
 check_and_install_dependencies() {
-    local ID
-    ID=$(grep -E '^(ID)=' /etc/os-release 2>/dev/null | awk -F= '{print $2}' | sed 's/"//g' || echo "unknown")
-
-    echo "🔍 正在检测系统 ($ID) 并安装依赖..."
-
-    # 统一安装 curl 和 openssl
+    echo "🔍 检查系统依赖..."
     if command -v apk >/dev/null; then
-        # Alpine Linux
         apk update >/dev/null
-        apk add curl openssl util-linux || { echo "❌ Alpine依赖安装失败"; exit 1; }
+        apk add curl openssl util-linux || { echo "❌ 安装失败"; exit 1; }
     elif command -v apt >/dev/null; then
-        # Debian/Ubuntu
         apt update -qq >/dev/null
         apt install -y curl openssl uuid-runtime >/dev/null
     elif command -v yum >/dev/null; then
-        # CentOS/Fedora
         yum install -y curl openssl uuid
     else
-        echo "⚠️ 无法自动安装依赖。请确保已安装 curl, openssl, uuidgen。"
+        echo "⚠️ 无法自动安装依赖，请手动安装 curl openssl uuidgen"
     fi
-    echo "✅ 依赖检查/安装完成。"
+    echo "✅ 依赖检查完成"
 }
 
-# ----------------------------------------------------
-
-# ===================== 输入端口或读取环境变量 =====================
+# ---------- 获取端口 ----------
 read_port() {
   if [[ $# -ge 1 && -n "${1:-}" ]]; then
     TUIC_PORT="$1"
-    echo "✅ 从命令行参数读取 TUIC(QUIC) 端口: $TUIC_PORT"
-    return
+    echo "✅ 指定端口: $TUIC_PORT"
+  else
+    TUIC_PORT="443"
+    echo "⚙️ 未指定端口，默认使用: $TUIC_PORT"
   fi
-
-  if [[ -n "${SERVER_PORT:-}" ]]; then
-    TUIC_PORT="$SERVER_PORT"
-    echo "✅ 从环境变量读取 TUIC(QUIC) 端口: $TUIC_PORT"
-    return
-  fi
-
-  local port
-  while true; do
-    echo "⚙️ 请输入 TUIC(QUIC) 端口 (1024-65535):"
-    read -rp "> " port
-    if [[ ! "$port" =~ ^[0-9]+$ || "$port" -lt 1024 || "$port" -gt 65535 ]]; then
-      echo "❌ 无效端口: $port"
-      continue
-    fi
-    TUIC_PORT="$port"
-    break
-  done
 }
 
-# ===================== 加载已有配置 =====================
+# ---------- 加载旧配置 ----------
 load_existing_config() {
   if [[ -f "$SERVER_TOML" ]]; then
-    # 使用 awk 来更稳定地提取端口和用户
-    TUIC_PORT=$(grep '^server =' "$SERVER_TOML" | sed -E 's/.*:(.*)\"/\1/' || echo "")
-    TUIC_UUID=$(grep '^\[users\]' -A1 "$SERVER_TOML" | tail -n1 | awk '{print $1}' || echo "")
-    TUIC_PASSWORD=$(grep '^\[users\]' -A1 "$SERVER_TOML" | tail -n1 | awk -F'"' '{print $2}' || echo "")
-    
-    # 仅在提取到有效信息时才算成功加载
+    TUIC_PORT=$(grep '^server =' "$SERVER_TOML" | grep -o '[0-9]\+')
+    TUIC_UUID=$(grep '^\[users\]' -A1 "$SERVER_TOML" | tail -n1 | awk '{print $1}')
+    TUIC_PASSWORD=$(grep '^\[users\]' -A1 "$SERVER_TOML" | tail -n1 | awk -F'"' '{print $2}')
     if [[ -n "$TUIC_PORT" && -n "$TUIC_UUID" && -n "$TUIC_PASSWORD" ]]; then
-      echo "📂 检测到已有配置，加载中..."
+      echo "📂 发现旧配置:"
       echo "✅ 端口: $TUIC_PORT"
       echo "✅ UUID: $TUIC_UUID"
       echo "✅ 密码: $TUIC_PASSWORD"
@@ -89,90 +63,51 @@ load_existing_config() {
   return 1
 }
 
-# ===================== 证书生成 =====================
+# ---------- 生成证书 ----------
 generate_cert() {
   if [[ -f "$CERT_PEM" && -f "$KEY_PEM" ]]; then
-    echo "🔐 检测到已有证书，跳过生成"
+    echo "🔐 已存在证书，跳过生成"
     return
   fi
-  echo "🔐 生成自签 ECDSA-P256 证书..."
-  # 兼容性修复: 确保 openssl 命令正确运行
+  echo "🔑 正在生成自签证书..."
   openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
-    -keyout "$KEY_PEM" -out "$CERT_PEM" -subj "/CN=${MASQ_DOMAIN}" -days 365 -nodes >/dev/null 2>&1 || {
-        echo "❌ OpenSSL 证书生成失败。"
-        exit 1
-    }
+    -keyout "$KEY_PEM" -out "$CERT_PEM" -subj "/CN=${MASQ_DOMAIN}" -days 3650 -nodes >/dev/null 2>&1
   chmod 600 "$KEY_PEM"
   chmod 644 "$CERT_PEM"
-  echo "✅ 自签证书生成完成"
+  echo "✅ 证书生成完成"
 }
 
-# ===================== 检查并下载 tuic-server (核心修复) =====================
+# ---------- 检测架构 & 下载 TUIC ----------
 check_tuic_server() {
-  
-  # 1. 强制清理：如果文件存在，删除它以确保下载的是兼容 Musl/Glibc 的正确版本。
-  if [[ -f "$TUIC_BIN" ]]; then
-    echo "⚠️ 检测到 tuic-server 文件，将强制删除并重新下载以确保 Musl/Glibc 兼容性..."
-    rm -f "$TUIC_BIN"
-  fi
-
-  # 2. 检查是否已找到且可执行 (通常在 rm 后不成立，除非用户手动放置)
-  if [[ -x "$TUIC_BIN" ]]; then
-    echo "✅ 已找到 tuic-server (二次确认)"
-    return
-  fi
-  
-  echo "📥 未找到 tuic-server，正在下载..."
-
-  # 3. 检测架构
-  ARCH=$(uname -m)
+  local ARCH=$(uname -m)
   case "$ARCH" in
-      x86_64|amd64)
-          ARCH="x86_64"
-          ;;
-      aarch64|arm64)
-          ARCH="aarch64"
-          ;;
-      *)
-          echo "❌ 暂不支持架构: $ARCH"
-          exit 1
-          ;;
+    x86_64|amd64) ARCH="x86_64" ;;
+    aarch64|arm64) ARCH="aarch64" ;;
+    *) echo "❌ 不支持的架构: $ARCH"; exit 1 ;;
   esac
 
-  # 4. 确定 C 库类型 (Glibc 或 Musl) - **增强检测**
   local C_LIB_SUFFIX=""
-  local ID
-  ID=$(grep -E '^(ID)=' /etc/os-release 2>/dev/null | awk -F= '{print $2}' | sed 's/"//g' || echo "unknown")
-
-  if [[ "$ID" == "alpine" ]]; then
-      echo "⚙️ 系统检测为 Musl (通过 /etc/os-release)"
+  if command -v ldd >/dev/null && ldd /bin/sh 2>&1 | grep -q musl; then
       C_LIB_SUFFIX="-musl"
+      echo "⚙️ 检测到系统使用 musl libc (Alpine)"
   else
-      # 兼容非 Alpine 的 Musl 系统，虽然不常见
-      if ldd /bin/sh 2>&1 | grep -q 'musl'; then
-          echo "⚙️ 系统检测为 Musl (通过 ldd 检测)"
-          C_LIB_SUFFIX="-musl"
-      else
-          echo "⚙️ 系统检测为 Glibc (Ubuntu/Debian/CentOS等)"
-      }
-      fi
+      echo "⚙️ 检测到系统使用 glibc"
   fi
-  
-  # 5. 构造下载 URL
-  local TUIC_URL="https://github.com/Itsusinn/tuic/releases/download/v${TUIC_VERSION}/tuic-server-${ARCH}-linux${C_LIB_SUFFIX}"
-  echo "⬇️ 目标下载链接: $TUIC_URL"
 
-  # 6. 下载
+  local TUIC_URL="https://github.com/Itsusinn/tuic/releases/download/v${TUIC_VERSION}/tuic-server-${ARCH}-linux${C_LIB_SUFFIX}"
+  echo "⬇️ 下载 TUIC: $TUIC_URL"
+
+  rm -f "$TUIC_BIN"
   if curl -L -f -o "$TUIC_BIN" "$TUIC_URL"; then
-    chmod +x "$TUIC_BIN"
-    echo "✅ tuic-server 下载完成"
+      chmod +x "$TUIC_BIN"
+      echo "✅ TUIC 下载完成并已设置可执行"
   else
-    echo "❌ 下载失败 (Curl Exit Code: $?)，请检查网络或手动下载 $TUIC_URL"
-    exit 1
+      echo "❌ 下载失败，请检查网络或手动下载 $TUIC_URL"
+      exit 1
   fi
 }
 
-# ===================== 生成配置文件 =====================
+# ---------- 生成配置文件 ----------
 generate_config() {
 cat > "$SERVER_TOML" <<EOF
 log_level = "off"
@@ -210,63 +145,46 @@ send_window = 33554432
 receive_window = 16777216
 max_idle_time = "20s"
 
-# 修复 TOML 配置错误：使用显式子表结构
-[quic.congestion_control]
-controller = "bbr"
-initial_window = 4194304
+  [quic.congestion_control]
+  algorithm = "bbr"
 EOF
+  echo "✅ 已写入配置文件: $SERVER_TOML"
 }
 
-# ===================== 获取公网 IP =====================
+# ---------- 获取公网 IP ----------
 get_server_ip() {
-  # 统一使用 ipify，增强兼容性
-  ip=$(curl -s --connect-timeout 5 https://api.ipify.org || true)
-  echo "${ip:-YOUR_SERVER_IP}"
+  ip=$(curl -s --connect-timeout 5 https://api.ipify.org || echo "YOUR_SERVER_IP")
+  echo "$ip"
 }
 
-# ===================== 生成 TUIC 链接 =====================
+# ---------- 生成 TUIC 链接 ----------
 generate_link() {
   local ip="$1"
   cat > "$LINK_TXT" <<EOF
 tuic://${TUIC_UUID}:${TUIC_PASSWORD}@${ip}:${TUIC_PORT}?congestion_control=bbr&alpn=h3&allowInsecure=1&sni=${MASQ_DOMAIN}&udp_relay_mode=native&disable_sni=0&reduce_rtt=1&max_udp_relay_packet_size=8192#TUIC-${ip}
 EOF
-
-  echo ""
-  echo "📱 TUIC 链接已生成并保存到 $LINK_TXT"
-  echo "🔗 链接内容："
+  echo "📱 TUIC 链接已生成 (${LINK_TXT})"
   cat "$LINK_TXT"
-  echo ""
 }
 
-# ===================== 后台循环守护 =====================
+# ---------- 后台守护运行 ----------
 run_background_loop() {
-  echo "✅ 服务已启动，tuic-server 正在运行..."
-  
-  # 确保当前目录可执行
-  local FULL_BIN_PATH
-  FULL_BIN_PATH=$(realpath "$TUIC_BIN")
-  
-  if ! [[ -x "$FULL_BIN_PATH" ]]; then
-    echo "❌ 致命错误：执行文件 ($FULL_BIN_PATH) 权限不足或文件系统错误。"
-    exit 1
-  fi
-  
+  echo "🚀 正在启动 TUIC 服务..."
+  local BIN_PATH
+  BIN_PATH=$(realpath "$TUIC_BIN")
+  chmod +x "$BIN_PATH"
   while true; do
-    "$FULL_BIN_PATH" -c "$SERVER_TOML"
-    echo "⚠️ tuic-server 已退出，5秒后重启..."
+    "$BIN_PATH" -c "$SERVER_TOML" || echo "⚠️ TUIC 崩溃，5秒后重启..."
     sleep 5
   done
 }
 
-# ===================== 主逻辑 =====================
+# ---------- 主逻辑 ----------
 main() {
   check_and_install_dependencies
-
   if ! load_existing_config; then
-    echo "⚙️ 第一次运行，开始初始化..."
     read_port "$@"
-    # 使用 uuidgen 命令 (依赖 util-linux 或 uuid-runtime)
-    TUIC_UUID="$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid 2>/dev/null || openssl rand -hex 16)"
+    TUIC_UUID="$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid)"
     TUIC_PASSWORD="$(openssl rand -hex 16)"
     echo "🔑 UUID: $TUIC_UUID"
     echo "🔑 密码: $TUIC_PASSWORD"
@@ -277,12 +195,11 @@ main() {
   else
     generate_cert
     check_tuic_server
-    # 如果加载了配置，但配置格式是旧的，也要重新生成配置以修复 TOML 错误
     generate_config
   fi
 
-  ip="$(get_server_ip)"
-  generate_link "$ip"
+  IP=$(get_server_ip)
+  generate_link "$IP"
   run_background_loop
 }
 
