@@ -1,149 +1,189 @@
-#!/usr/bin/env bash
-# -*- coding: utf-8 -*-
-# Hysteria2 极简部署脚本（支持命令行端口参数 + 默认跳过证书验证）
-# 适用于超低内存环境（32-64MB）
+#!/bin/bash
+# TUIC v5 over QUIC 自动部署脚本（支持 Pterodactyl SERVER_PORT + 命令行参数）
+set -euo pipefail
+IFS=$'\n\t'
 
-set -e
+MASQ_DOMAIN="www.bing.com"    # 固定伪装域名
+SERVER_TOML="server.toml"
+CERT_PEM="tuic-cert.pem"
+KEY_PEM="tuic-key.pem"
+LINK_TXT="tuic_link.txt"
+TUIC_BIN="./tuic-server"
 
-# ---------- 默认配置 ----------
-HYSTERIA_VERSION="v2.6.4"
-DEFAULT_PORT=22222         # 若未提供参数则使用此端口
-AUTH_PASSWORD="ieshare2025"   # 建议修改为复杂密码
-CERT_FILE="cert.pem"
-KEY_FILE="key.pem"
-SNI="www.bing.com"
-ALPN="h3"
-# ------------------------------
+# ===================== 输入端口或读取环境变量 =====================
+read_port() {
+  if [[ $# -ge 1 && -n "${1:-}" ]]; then
+    TUIC_PORT="$1"
+    echo "✅ 从命令行参数读取 TUIC(QUIC) 端口: $TUIC_PORT"
+    return
+  fi
 
-echo "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
-echo "Hysteria2 极简部署脚本（Shell 版）"
-echo "支持命令行端口参数，如：bash hysteria2.sh 443"
-echo "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
+  if [[ -n "${SERVER_PORT:-}" ]]; then
+    TUIC_PORT="$SERVER_PORT"
+    echo "✅ 从环境变量读取 TUIC(QUIC) 端口: $TUIC_PORT"
+    return
+  fi
 
-# ---------- 获取端口 ----------
-if [[ $# -ge 1 && -n "${1:-}" ]]; then
-    SERVER_PORT="$1"
-    echo "✅ 使用命令行指定端口: $SERVER_PORT"
-else
-    SERVER_PORT="${SERVER_PORT:-$DEFAULT_PORT}"
-    echo "⚙️ 未提供端口参数，使用默认端口: $SERVER_PORT"
-fi
-
-# ---------- 检测架构 ----------
-arch_name() {
-    local machine
-    machine=$(uname -m | tr '[:upper:]' '[:lower:]')
-    if [[ "$machine" == *"arm64"* ]] || [[ "$machine" == *"aarch64"* ]]; then
-        echo "arm64"
-    elif [[ "$machine" == *"x86_64"* ]] || [[ "$machine" == *"amd64"* ]]; then
-        echo "amd64"
-    else
-        echo ""
+  local port
+  while true; do
+    echo "⚙️ 请输入 TUIC(QUIC) 端口 (1024-65535):"
+    read -rp "> " port
+    if [[ ! "$port" =~ ^[0-9]+$ || "$port" -lt 1024 || "$port" -gt 65535 ]]; then
+      echo "❌ 无效端口: $port"
+      continue
     fi
+    TUIC_PORT="$port"
+    break
+  done
 }
 
-ARCH=$(arch_name)
-if [ -z "$ARCH" ]; then
-  echo "❌ 无法识别 CPU 架构: $(uname -m)"
-  exit 1
-fi
-
-BIN_NAME="hysteria-linux-${ARCH}"
-BIN_PATH="./${BIN_NAME}"
-
-# ---------- 下载二进制 ----------
-download_binary() {
-    if [ -f "$BIN_PATH" ]; then
-        echo "✅ 二进制已存在，跳过下载。"
-        return
-    fi
-    URL="https://github.com/apernet/hysteria/releases/download/app/${HYSTERIA_VERSION}/${BIN_NAME}"
-    echo "⏳ 下载: $URL"
-    curl -L --retry 3 --connect-timeout 30 -o "$BIN_PATH" "$URL"
-    chmod +x "$BIN_PATH"
-    echo "✅ 下载完成并设置可执行: $BIN_PATH"
+# ===================== 加载已有配置 =====================
+load_existing_config() {
+  if [[ -f "$SERVER_TOML" ]]; then
+    TUIC_PORT=$(grep '^server =' "$SERVER_TOML" | sed -E 's/.*:(.*)\"/\1/')
+    TUIC_UUID=$(grep '^\[users\]' -A1 "$SERVER_TOML" | tail -n1 | awk '{print $1}')
+    TUIC_PASSWORD=$(grep '^\[users\]' -A1 "$SERVER_TOML" | tail -n1 | awk -F'"' '{print $2}')
+    echo "📂 检测到已有配置，加载中..."
+    echo "✅ 端口: $TUIC_PORT"
+    echo "✅ UUID: $TUIC_UUID"
+    echo "✅ 密码: $TUIC_PASSWORD"
+    return 0
+  fi
+  return 1
 }
 
-# ---------- 生成证书 ----------
-ensure_cert() {
-    if [ -f "$CERT_FILE" ] && [ -f "$KEY_FILE" ]; then
-        echo "✅ 发现证书，使用现有 cert/key。"
-        return
-    fi
-    echo "🔑 未发现证书，使用 openssl 生成自签证书（prime256v1）..."
-    openssl req -x509 -nodes -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
-        -days 3650 -keyout "$KEY_FILE" -out "$CERT_FILE" -subj "/CN=${SNI}"
-    echo "✅ 证书生成成功。"
+# ===================== 证书生成 =====================
+generate_cert() {
+  if [[ -f "$CERT_PEM" && -f "$KEY_PEM" ]]; then
+    echo "🔐 检测到已有证书，跳过生成"
+    return
+  fi
+  echo "🔐 生成自签 ECDSA-P256 证书..."
+  openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+    -keyout "$KEY_PEM" -out "$CERT_PEM" -subj "/CN=${MASQ_DOMAIN}" -days 365 -nodes >/dev/null 2>&1
+  chmod 600 "$KEY_PEM"
+  chmod 644 "$CERT_PEM"
+  echo "✅ 自签证书生成完成"
 }
 
-# ---------- 写配置文件 ----------
-write_config() {
-cat > server.yaml <<EOF
-listen: ":${SERVER_PORT}"
-tls:
-  cert: "$(pwd)/${CERT_FILE}"
-  key: "$(pwd)/${KEY_FILE}"
-  alpn:
-    - "${ALPN}"
-auth:
-  type: "password"
-  password: "${AUTH_PASSWORD}"
-bandwidth:
-  up: "200mbps"
-  down: "200mbps"
-quic:
-  max_idle_timeout: "10s"
-  max_concurrent_streams: 4
-  initial_stream_receive_window: 65536
-  max_stream_receive_window: 131072
-  initial_conn_receive_window: 131072
-  max_conn_receive_window: 262144
+# ===================== 检查并下载 tuic-server =====================
+check_tuic_server() {
+  if [[ -x "$TUIC_BIN" ]]; then
+    echo "✅ 已找到 tuic-server"
+    return
+  fi
+  echo "📥 未找到 tuic-server，正在下载..."
+  ARCH=$(uname -m)
+  if [[ "$ARCH" != "x86_64" ]]; then
+    echo "❌ 暂不支持架构: $ARCH"
+    exit 1
+  fi
+  TUIC_URL="https://github.com/Itsusinn/tuic/releases/download/v1.3.5/tuic-server-x86_64-linux"
+  if curl -L -f -o "$TUIC_BIN" "$TUIC_URL"; then
+    chmod +x "$TUIC_BIN"
+    echo "✅ tuic-server 下载完成"
+  else
+    echo "❌ 下载失败，请手动下载 $TUIC_URL"
+    exit 1
+  fi
+}
+
+# ===================== 生成配置文件 =====================
+generate_config() {
+cat > "$SERVER_TOML" <<EOF
+log_level = "off"
+server = "0.0.0.0:${TUIC_PORT}"
+
+udp_relay_ipv6 = false
+zero_rtt_handshake = true
+dual_stack = false
+auth_timeout = "10s"
+task_negotiation_timeout = "5s"
+gc_interval = "10s"
+gc_lifetime = "10s"
+max_external_packet_size = 8192
+
+[users]
+${TUIC_UUID} = "${TUIC_PASSWORD}"
+
+[tls]
+self_sign = false
+certificate = "$CERT_PEM"
+private_key = "$KEY_PEM"
+alpn = ["h3"]
+
+[restful]
+addr = "127.0.0.1:${TUIC_PORT}"
+secret = "$(openssl rand -hex 16)"
+maximum_clients_per_user = 999999999
+
+[quic]
+initial_mtu = 1500
+min_mtu = 1200
+gso = true
+pmtu = true
+send_window = 33554432
+receive_window = 16777216
+max_idle_time = "20s"
+
+[quic.congestion_control]
+controller = "bbr"
+initial_window = 4194304
 EOF
-    echo "✅ 写入配置 server.yaml（端口=${SERVER_PORT}, SNI=${SNI}, ALPN=${ALPN}）。"
 }
 
-# ---------- 获取服务器 IP ----------
+# ===================== 获取公网 IP =====================
 get_server_ip() {
-    IP=$(curl -s --max-time 10 https://api.ipify.org || echo "YOUR_SERVER_IP")
-    echo "$IP"
+  ip=$(curl -s --connect-timeout 3 https://api.ipify.org || true)
+  echo "${ip:-YOUR_SERVER_IP}"
 }
 
-# ---------- 打印连接信息 ----------
-print_connection_info() {
-    local IP="$1"
-    echo "🎉 Hysteria2 部署成功！（极简优化版）"
-    echo "=========================================================================="
-    echo "📋 服务器信息:"
-    echo "   🌐 IP地址: $IP"
-    echo "   🔌 端口: $SERVER_PORT"
-    echo "   🔑 密码: $AUTH_PASSWORD"
-    echo ""
-    echo "📱 节点链接（SNI=${SNI}, ALPN=${ALPN}）:"
-    echo "hysteria2://${AUTH_PASSWORD}@${IP}:${SERVER_PORT}?sni=${SNI}&alpn=${ALPN}#Hy2-Bing"
-    echo ""
-    echo "📄 客户端配置文件:"
-    echo "server: ${IP}:${SERVER_PORT}"
-    echo "auth: ${AUTH_PASSWORD}"
-    echo "tls:"
-    echo "  sni: ${SNI}"
-    echo "  alpn: [\"${ALPN}\"]"
-    echo "  insecure: true"
-    echo "socks5:"
-    echo "  listen: 127.0.0.1:1080"
-    echo "http:"
-    echo "  listen: 127.0.0.1:8080"
-    echo "=========================================================================="
+# ===================== 生成 TUIC 链接 =====================
+generate_link() {
+  local ip="$1"
+  cat > "$LINK_TXT" <<EOF
+tuic://${TUIC_UUID}:${TUIC_PASSWORD}@${ip}:${TUIC_PORT}?congestion_control=bbr&alpn=h3&allowInsecure=1&sni=${MASQ_DOMAIN}&udp_relay_mode=native&disable_sni=0&reduce_rtt=1&max_udp_relay_packet_size=8192#TUIC-${ip}
+EOF
+
+  echo ""
+  echo "📱 TUIC 链接已生成并保存到 $LINK_TXT"
+  echo "🔗 链接内容："
+  cat "$LINK_TXT"
+  echo ""
 }
 
-# ---------- 主逻辑 ----------
+# ===================== 后台循环守护 =====================
+run_background_loop() {
+  echo "✅ 服务已启动，tuic-server 正在运行..."
+  while true; do
+    "$TUIC_BIN" -c "$SERVER_TOML"
+    echo "⚠️ tuic-server 已退出，5秒后重启..."
+    sleep 5
+  done
+}
+
+# ===================== 主逻辑 =====================
 main() {
-    download_binary
-    ensure_cert
-    write_config
-    SERVER_IP=$(get_server_ip)
-    print_connection_info "$SERVER_IP"
-    echo "🚀 启动 Hysteria2 服务器..."
-    exec "$BIN_PATH" server -c server.yaml
+  if ! load_existing_config; then
+    echo "⚙️ 第一次运行，开始初始化..."
+    read_port "$@"
+    TUIC_UUID="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null)"
+    TUIC_PASSWORD="$(openssl rand -hex 16)"
+    echo "🔑 UUID: $TUIC_UUID"
+    echo "🔑 密码: $TUIC_PASSWORD"
+    echo "🎯 SNI: ${MASQ_DOMAIN}"
+    generate_cert
+    check_tuic_server
+    generate_config
+  else
+    generate_cert
+    check_tuic_server
+  fi
+
+  ip="$(get_server_ip)"
+  generate_link "$ip"
+  run_background_loop
 }
 
 main "$@"
+
