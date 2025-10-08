@@ -139,14 +139,22 @@ check_tuic_server() {
           ;;
   esac
 
-  # 4. 确定 C 库类型 (Glibc 或 Musl)
-  # Alpine 使用 /lib/ld-musl-*.so.1，其他常用系统使用 /lib/ld-linux-*.so.2 或 /lib/ld-linux-aarch64.so.1
+  # 4. 确定 C 库类型 (Glibc 或 Musl) - **增强检测**
   local C_LIB_SUFFIX=""
-  if ldd /bin/sh 2>&1 | grep -q 'musl'; then
-      echo "⚙️ 系统检测为 Musl (Alpine)"
+  local ID
+  ID=$(grep -E '^(ID)=' /etc/os-release 2>/dev/null | awk -F= '{print $2}' | sed 's/"//g' || echo "unknown")
+
+  if [[ "$ID" == "alpine" ]]; then
+      echo "⚙️ 系统检测为 Musl (通过 /etc/os-release)"
       C_LIB_SUFFIX="-musl"
   else
-      echo "⚙️ 系统检测为 Glibc (Ubuntu/Debian)"
+      # 兼容非 Alpine 的 Musl 系统，虽然不常见
+      if ldd /bin/sh 2>&1 | grep -q 'musl'; then
+          echo "⚙️ 系统检测为 Musl (通过 ldd 检测)"
+          C_LIB_SUFFIX="-musl"
+      else
+          echo "⚙️ 系统检测为 Glibc (Ubuntu/Debian/CentOS等)"
+      fi
   fi
   
   # 5. 构造下载 URL
