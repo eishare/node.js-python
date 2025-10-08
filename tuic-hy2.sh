@@ -8,7 +8,7 @@ IFS=$'\n\t'
 
 PORT=${1:-443}
 INSTALL_DIR="/root/tuic"
-VERSION="1.5.9"
+VERSION="1.5.2"
 MASQ_DOMAIN="www.bing.com"
 
 mkdir -p "$INSTALL_DIR"
@@ -120,3 +120,4 @@ echo "🎉 部署完成！"
 echo "📄 配置: ${INSTALL_DIR}/server.toml"
 echo "🔗 链接: ${INSTALL_DIR}/tuic_link.txt"
 echo "⚙️ 启动脚本: ${INSTALL_DIR}/start.sh"
+
