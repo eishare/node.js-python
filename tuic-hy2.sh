@@ -190,4 +190,63 @@ max_idle_time = "20s"
 
 [quic.congestion_control]
 controller = "bbr"
-initial
+initial_window = 4194304
+EOF
+}
+
+# ===================== 获取公网 IP =====================
+get_server_ip() {
+  ip=$(curl -s --connect-timeout 3 https://api.ipify.org || true)
+  echo "${ip:-YOUR_SERVER_IP}"
+}
+
+# ===================== 生成 TUIC 链接 =====================
+generate_link() {
+  local ip="$1"
+  cat > "$LINK_TXT" <<EOF
+tuic://${TUIC_UUID}:${TUIC_PASSWORD}@${ip}:${TUIC_PORT}?congestion_control=bbr&alpn=h3&allowInsecure=1&sni=${MASQ_DOMAIN}&udp_relay_mode=native&disable_sni=0&reduce_rtt=1&max_udp_relay_packet_size=8192#TUIC-${ip}
+EOF
+
+  echo ""
+  echo "📱 TUIC 链接已生成并保存到 $LINK_TXT"
+  echo "🔗 链接内容："
+  cat "$LINK_TXT"
+  echo ""
+}
+
+# ===================== 后台循环守护 =====================
+run_background_loop() {
+  echo "✅ 服务已启动，tuic-server 正在运行..."
+  while true; do
+    "$TUIC_BIN" -c "$SERVER_TOML"
+    echo "⚠️ tuic-server 已退出，5秒后重启..."
+    sleep 5
+  done
+}
+
+# ===================== 主逻辑 =====================
+main() {
+  check_alpine_glibc
+  check_dependencies
+  if ! load_existing_config; then
+    echo "⚙️ 第一次运行，开始初始化..."
+    read_port "$@"
+    TUIC_UUID="$(uuidgen)"
+    TUIC_PASSWORD="$(openssl rand -hex 16)"
+    echo "🔑 UUID: $TUIC_UUID"
+    echo "🔑 密码: $TUIC_PASSWORD"
+    echo "🎯 SNI: ${MASQ_DOMAIN}"
+    generate_cert
+    check_tuic_server
+    generate_config
+  else
+    generate_cert
+    check_tuic_server
+  fi
+
+  ip="$(get_server_ip)"
+  generate_link "$ip"
+  run_background_loop
+}
+
+main "$@"
