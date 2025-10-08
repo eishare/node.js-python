@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🌀 TUIC v1.5.9 自动部署（支持 musl / glibc，Claw Cloud 持久化版）
+# 🌀 TUIC v1.5.2 自动部署（支持 musl / glibc，Claw Cloud 持久化版）
 # 修复下载 404 问题，自动选择正确文件名
 # =============================================================
 set -euo pipefail
@@ -120,4 +120,5 @@ echo "🎉 部署完成！"
 echo "📄 配置: ${INSTALL_DIR}/server.toml"
 echo "🔗 链接: ${INSTALL_DIR}/tuic_link.txt"
 echo "⚙️ 启动脚本: ${INSTALL_DIR}/start.sh"
+
 
