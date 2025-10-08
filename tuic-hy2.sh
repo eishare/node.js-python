@@ -154,6 +154,7 @@ check_tuic_server() {
           C_LIB_SUFFIX="-musl"
       else
           echo "⚙️ 系统检测为 Glibc (Ubuntu/Debian/CentOS等)"
+      }
       fi
   fi
   
@@ -208,10 +209,8 @@ pmtu = true
 send_window = 33554432
 receive_window = 16777216
 max_idle_time = "20s"
-
-[quic.congestion_control]
-controller = "bbr"
-initial_window = 4194304
+# 修复 TOML 配置错误：使用行内表格定义 congestion_control 结构体
+congestion_control = { controller = "bbr", initial_window = 4194304 }
 EOF
 }
 
@@ -275,6 +274,8 @@ main() {
   else
     generate_cert
     check_tuic_server
+    # 如果加载了配置，但配置格式是旧的，也要重新生成配置以修复 TOML 错误
+    generate_config
   fi
 
   ip="$(get_server_ip)"
