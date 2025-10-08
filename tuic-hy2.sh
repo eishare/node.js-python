@@ -1,12 +1,8 @@
 #!/bin/sh
 # =============================================
-# TUIC v5 over QUIC 一键部署脚本（增强版修复）
-# 自动检测 curl/bash，下载 tuic-server 并验证 ELF 二进制
-# 支持 Alpine / Debian，x86_64 架构
+# TUIC v5 over QUIC 一键部署脚本（彻底修复版）
+# 适用于 Alpine / Debian，x86_64
 # =============================================
-
-set -e
-IFS=$'\n\t'
 
 MASQ_DOMAIN="www.bing.com"
 SERVER_TOML="server.toml"
@@ -15,30 +11,30 @@ KEY_PEM="tuic-key.pem"
 LINK_TXT="tuic_link.txt"
 TUIC_BIN="./tuic-server"
 
-# ===================== 检查 curl 和 bash =====================
+# ===================== 检查并安装 curl/bash =====================
 check_shell_deps() {
   if ! command -v curl >/dev/null 2>&1; then
-    echo "⚠️ 未检测到 curl，尝试安装..."
+    echo "⚠️ curl 未安装，尝试安装..."
     if [ -f /etc/alpine-release ]; then
       apk add --no-cache curl >/dev/null 2>&1
     elif [ -f /etc/debian_version ]; then
       apt-get update -y >/dev/null 2>&1
       apt-get install -y curl >/dev/null 2>&1
     else
-      echo "❌ 无法安装 curl，请手动安装"
+      echo "❌ 无法自动安装 curl，请手动安装"
       exit 1
     fi
   fi
 
   if ! command -v bash >/dev/null 2>&1; then
-    echo "⚠️ 未检测到 bash，尝试安装..."
+    echo "⚠️ bash 未安装，尝试安装..."
     if [ -f /etc/alpine-release ]; then
       apk add --no-cache bash >/dev/null 2>&1
     elif [ -f /etc/debian_version ]; then
       apt-get update -y >/dev/null 2>&1
       apt-get install -y bash >/dev/null 2>&1
     else
-      echo "❌ 无法安装 bash，请手动安装"
+      echo "❌ 无法自动安装 bash，请手动安装"
       exit 1
     fi
   fi
@@ -70,7 +66,7 @@ check_dependencies() {
   echo "🧠 检测到系统类型: $OS_TYPE"
 }
 
-# ===================== 输入端口 =====================
+# ===================== 读取端口 =====================
 read_port() {
   if [ -n "${1:-}" ]; then
     TUIC_PORT="$1"
@@ -167,7 +163,7 @@ get_server_ip() {
   curl -s --connect-timeout 3 https://api.ipify.org || echo "YOUR_SERVER_IP"
 }
 
-# ===================== 生成链接 =====================
+# ===================== 生成 TUIC 链接 =====================
 generate_link() {
   ip="$1"
   cat > "$LINK_TXT" <<EOF
