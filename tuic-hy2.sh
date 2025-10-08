@@ -1,112 +1,90 @@
-#!/usr/bin/env bash
-# TUIC 自动部署脚本 v1.0
-# 支持 Ubuntu/Debian/Alpine 自动识别 glibc/musl 二进制
-# 支持命令行端口参数
-# 适用于 x86_64 架构
+#!/bin/bash
+# TUIC v5 over QUIC 自动部署脚本（更新：部署完成直接打印节点链接）
+# 兼容：Alpine (musl), Ubuntu/Debian (glibc)
 
 set -euo pipefail
 IFS=$'\n\t'
 
-# ----------------- 配置 -----------------
+# ===================== 全局配置 =====================
+MASQ_DOMAIN="www.bing.com"    # 固定伪装域名
 TUIC_DIR="$HOME/tuic"
-TUIC_VERSION="1.5.2"
-CERT_FILE="$TUIC_DIR/tuic-cert.pem"
-KEY_FILE="$TUIC_DIR/tuic-key.pem"
-CONFIG_FILE="$TUIC_DIR/server.toml"
+SERVER_TOML="$TUIC_DIR/server.toml"
+CERT_PEM="$TUIC_DIR/tuic-cert.pem"
+KEY_PEM="$TUIC_DIR/tuic-key.pem"
+LINK_TXT="$TUIC_DIR/tuic_link.txt"
 TUIC_BIN="$TUIC_DIR/tuic-server"
-LINK_FILE="$TUIC_DIR/tuic_link.txt"
-SNI="www.bing.com"
-ALPN="h3"
-# ---------------------------------------
+TUIC_VERSION="1.5.2"
 
 mkdir -p "$TUIC_DIR"
 
-# ----------------- 端口 -----------------
-if [[ $# -ge 1 && -n "${1:-}" ]]; then
-    PORT="$1"
-else
-    PORT=24568
-fi
-echo "✅ 使用端口: $PORT"
-
-# ----------------- 系统检测 -----------------
-detect_system() {
-    if command -v lsb_release >/dev/null 2>&1; then
-        OS=$(lsb_release -si | tr '[:upper:]' '[:lower:]')
-    elif [[ -f /etc/os-release ]]; then
-        OS=$(grep '^ID=' /etc/os-release | cut -d= -f2 | tr -d '"')
-    else
-        OS="unknown"
-    fi
-
-    ARCH=$(uname -m)
-    if [[ "$ARCH" == "x86_64" ]]; then
-        ARCH="x86_64"
-    else
-        echo "❌ 当前架构不支持: $ARCH"
-        exit 1
-    fi
-
-    # 判断 C 库
-    if [[ "$OS" == "alpine" ]]; then
-        LIB_SUFFIX="-musl"
-    else
-        LIB_SUFFIX=""
-    fi
-
-    echo "🔍 系统: $OS, 架构: $ARCH, C库后缀: $LIB_SUFFIX"
-}
-
-# ----------------- 安装依赖 -----------------
-install_dependencies() {
-    echo "🔧 检查并安装依赖..."
+# ===================== 检查依赖 =====================
+check_dependencies() {
+    echo "🔍 检查系统依赖..."
     if command -v apk >/dev/null; then
         apk update >/dev/null
-        apk add --no-cache curl openssl coreutils grep sed util-linux >/dev/null
+        apk add --no-cache bash curl openssl coreutils grep sed util-linux
     elif command -v apt >/dev/null; then
         apt update -qq >/dev/null
-        apt install -y curl openssl uuid-runtime >/dev/null
-    elif command -v yum >/dev/null; then
-        yum install -y curl openssl util-linux >/dev/null
+        DEBIAN_FRONTEND=noninteractive apt install -y curl openssl uuid-runtime >/dev/null
+    else
+        echo "⚠️ 无法自动安装依赖，请确保已安装 curl, openssl, uuidgen"
     fi
-    echo "✅ 依赖安装完成"
+    echo "✅ 依赖检查完成"
 }
 
-# ----------------- 生成证书 -----------------
+# ===================== 读取端口 =====================
+read_port() {
+    if [[ $# -ge 1 && -n "${1:-}" ]]; then
+        TUIC_PORT="$1"
+        echo "✅ 使用端口: $TUIC_PORT"
+    else
+        echo "⚙️ 请输入 TUIC 端口 (1024-65535):"
+        read -rp "> " TUIC_PORT
+    fi
+}
+
+# ===================== 生成自签证书 =====================
 generate_cert() {
-    if [[ -f "$CERT_FILE" && -f "$KEY_FILE" ]]; then
-        echo "🔐 已存在证书，跳过生成"
+    if [[ -f "$CERT_PEM" && -f "$KEY_PEM" ]]; then
+        echo "🔐 检测到已有证书，跳过生成"
         return
     fi
     echo "🔐 生成自签 ECDSA-P256 证书..."
     openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
-        -keyout "$KEY_FILE" -out "$CERT_FILE" -subj "/CN=${SNI}" -days 365 -nodes >/dev/null 2>&1
-    chmod 600 "$KEY_FILE" "$CERT_FILE"
+        -keyout "$KEY_PEM" -out "$CERT_PEM" -subj "/CN=${MASQ_DOMAIN}" -days 365 -nodes >/dev/null 2>&1
+    chmod 600 "$KEY_PEM"
+    chmod 644 "$CERT_PEM"
     echo "✅ 证书生成完成"
 }
 
-# ----------------- 下载 TUIC -----------------
+# ===================== 下载 tuic-server =====================
 download_tuic() {
-    if [[ -x "$TUIC_BIN" ]]; then
-        echo "✅ TUIC 二进制已存在，跳过下载"
-        return
+    echo "⚙️ 检测系统架构..."
+    ARCH=$(uname -m)
+    case "$ARCH" in
+        x86_64|amd64) ARCH="x86_64";;
+        aarch64|arm64) ARCH="aarch64";;
+        *) echo "❌ 不支持架构: $ARCH"; exit 1;;
+    esac
+
+    C_LIB_SUFFIX=""
+    if grep -qi alpine /etc/os-release 2>/dev/null; then
+        C_LIB_SUFFIX="-musl"
     fi
 
-    URL="https://github.com/Itsusinn/tuic/releases/download/v${TUIC_VERSION}/tuic-server-${ARCH}-linux${LIB_SUFFIX}"
-    echo "⬇️ 下载 TUIC: $URL"
-    curl -L -f -o "$TUIC_BIN" "$URL"
+    TUIC_URL="https://github.com/Itsusinn/tuic/releases/download/v${TUIC_VERSION}/tuic-server-${ARCH}-linux${C_LIB_SUFFIX}"
+    echo "⬇️ 下载 TUIC: $TUIC_URL"
+
+    curl -L -f -o "$TUIC_BIN" "$TUIC_URL"
     chmod +x "$TUIC_BIN"
-    echo "✅ TUIC 下载完成"
+    echo "✅ TUIC 下载完成并赋予执行权限"
 }
 
-# ----------------- 生成配置 -----------------
+# ===================== 生成配置 =====================
 generate_config() {
-    UUID=$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid)
-    PASSWORD=$(openssl rand -hex 16)
-
-    cat > "$CONFIG_FILE" <<EOF
+cat > "$SERVER_TOML" <<EOF
 log_level = "off"
-server = "0.0.0.0:${PORT}"
+server = "0.0.0.0:${TUIC_PORT}"
 
 udp_relay_ipv6 = false
 zero_rtt_handshake = true
@@ -118,16 +96,16 @@ gc_lifetime = "10s"
 max_external_packet_size = 8192
 
 [users]
-${UUID} = "${PASSWORD}"
+$TUIC_UUID = "$TUIC_PASSWORD"
 
 [tls]
 self_sign = false
-certificate = "$CERT_FILE"
-private_key = "$KEY_FILE"
-alpn = ["$ALPN"]
+certificate = "$CERT_PEM"
+private_key = "$KEY_PEM"
+alpn = ["h3"]
 
 [restful]
-addr = "127.0.0.1:${PORT}"
+addr = "127.0.0.1:${TUIC_PORT}"
 secret = "$(openssl rand -hex 16)"
 maximum_clients_per_user = 999999999
 
@@ -141,41 +119,57 @@ receive_window = 16777216
 max_idle_time = "20s"
 congestion_control = { controller = "bbr", initial_window = 4194304 }
 EOF
-
-    echo "✅ 配置文件生成完成: $CONFIG_FILE"
-
-    # 生成 TUIC 链接
-    IP=$(curl -s https://api.ipify.org || echo "YOUR_SERVER_IP")
-    cat > "$LINK_FILE" <<EOF
-tuic://${UUID}:${PASSWORD}@${IP}:${PORT}?congestion_control=bbr&alpn=${ALPN}&allowInsecure=1&sni=${SNI}&udp_relay_mode=native&disable_sni=0&reduce_rtt=1#TUIC-${IP}
-EOF
-    echo "📱 TUIC 链接已生成: $LINK_FILE"
+    echo "✅ 配置文件生成完成: $SERVER_TOML"
 }
 
-# ----------------- 启动 TUIC -----------------
-start_tuic() {
+# ===================== 获取公网 IP =====================
+get_server_ip() {
+    curl -s --connect-timeout 5 https://api.ipify.org || echo "YOUR_SERVER_IP"
+}
+
+# ===================== 生成 TUIC 链接 =====================
+generate_link() {
+    local ip="$1"
+    cat > "$LINK_TXT" <<EOF
+tuic://$TUIC_UUID:$TUIC_PASSWORD@$ip:$TUIC_PORT?congestion_control=bbr&alpn=h3&allowInsecure=1&sni=${MASQ_DOMAIN}&udp_relay_mode=native&disable_sni=0&reduce_rtt=1#TUIC-$ip
+EOF
+
+    echo ""
+    echo "📱 TUIC 节点链接（直接复制使用）:"
+    cat "$LINK_TXT"
+}
+
+# ===================== 启动服务 =====================
+start_service() {
     echo "🚀 启动 TUIC 服务..."
-    nohup "$TUIC_BIN" -c "$CONFIG_FILE" >/dev/null 2>&1 &
+    nohup "$TUIC_BIN" -c "$SERVER_TOML" >/dev/null 2>&1 &
     sleep 1
-    if ! pgrep -f tuic-server >/dev/null; then
-        echo "❌ TUIC 启动失败，请检查日志或二进制兼容性"
-        exit 1
-    fi
     echo "✅ TUIC 已启动"
 }
 
-# ----------------- 主函数 -----------------
+# ===================== 主逻辑 =====================
 main() {
-    detect_system
-    install_dependencies
+    check_dependencies
+    read_port "$@"
+
+    # 生成 UUID 和密码
+    TUIC_UUID="$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid)"
+    TUIC_PASSWORD="$(openssl rand -hex 16)"
+    echo "🔑 UUID: $TUIC_UUID"
+    echo "🔑 密码: $TUIC_PASSWORD"
+    echo "🎯 SNI: $MASQ_DOMAIN"
+
     generate_cert
     download_tuic
     generate_config
-    start_tuic
+
+    SERVER_IP=$(get_server_ip)
+    generate_link "$SERVER_IP"
+    start_service
 
     echo "🎉 TUIC 部署完成！"
-    echo "📄 配置文件: $CONFIG_FILE"
-    echo "🔗 链接文件: $LINK_FILE"
+    echo "📄 配置文件: $SERVER_TOML"
+    echo "🔗 链接文件: $LINK_TXT"
     echo "⚙️ 启动脚本目录: $TUIC_DIR"
 }
 
