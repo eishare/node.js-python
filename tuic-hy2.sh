@@ -209,8 +209,11 @@ pmtu = true
 send_window = 33554432
 receive_window = 16777216
 max_idle_time = "20s"
-# 修复 TOML 配置错误：使用行内表格定义 congestion_control 结构体
-congestion_control = { controller = "bbr", initial_window = 4194304 }
+
+# 修复 TOML 配置错误：使用显式子表结构
+[quic.congestion_control]
+controller = "bbr"
+initial_window = 4194304
 EOF
 }
 
