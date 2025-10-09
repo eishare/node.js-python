@@ -1,7 +1,6 @@
 #!/bin/bash
 # =========================================
-# TUIC v5 自动部署增强版 (适配 Alpine / Ubuntu / Debian)
-# 文件保存在容器内部，日志挂载 /var/log/tuic
+# TUIC v5 自动部署增强版 (爪云 NAT / Alpine / Ubuntu / Debian)
 # by eishare / 2025
 # =========================================
 
@@ -9,31 +8,37 @@ set -euo pipefail
 IFS=$'\n\t'
 
 TUIC_VERSION="1.5.2"
-WORK_DIR="/tuic"                     # TUIC 二进制和配置存放在容器内部
+WORK_DIR="/tuic"
 BIN_PATH="$WORK_DIR/tuic-server"
 CONF_PATH="$WORK_DIR/server.toml"
 CERT_PEM="$WORK_DIR/tuic-cert.pem"
 KEY_PEM="$WORK_DIR/tuic-key.pem"
 LINK_PATH="$WORK_DIR/tuic_link.txt"
 START_SH="$WORK_DIR/start.sh"
-MASQ_DOMAIN="www.bing.com"
 LOG_DIR="/var/log/tuic"
 LOG_FILE="$LOG_DIR/tuic.log"
+MASQ_DOMAIN="www.bing.com"
 
 # ------------------ 卸载功能 ------------------
 if [[ "${1:-}" == "uninstall" ]]; then
     echo "🧹 正在卸载 TUIC..."
     pkill -f tuic-server || true
     rm -rf "$WORK_DIR"
-    rm -f "$START_SH"
-    systemctl disable tuic-server.service 2>/dev/null || true
-    rm -f /etc/systemd/system/tuic-server.service
+    rm -rf "$LOG_DIR"
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl disable tuic-server.service 2>/dev/null || true
+        rm -f /etc/systemd/system/tuic-server.service
+    fi
     echo "✅ TUIC 已完全卸载。"
     exit 0
 fi
 
-# ------------------ 端口 ------------------
-PORT="${1:-443}"
+# ------------------ 检查端口 ------------------
+if [[ $# -ge 1 ]]; then
+    PORT="$1"
+else
+    PORT="443"
+fi
 
 # ------------------ 检查系统 ------------------
 echo "🔍 检查系统信息..."
@@ -43,13 +48,13 @@ ARCH=$(uname -m)
 
 if grep -qi alpine /etc/os-release; then
     C_LIB_SUFFIX="-linux-musl"
-    PKG_INSTALL="apk add --no-cache bash curl openssl util-linux net-tools iproute2 psmisc"
+    PKG_INSTALL="apk add --no-cache bash curl openssl util-linux net-tools iproute2"
 elif command -v apt >/dev/null 2>&1; then
     C_LIB_SUFFIX="-linux"
-    PKG_INSTALL="apt update -y && apt install -y curl openssl uuid-runtime net-tools iproute2 procps"
+    PKG_INSTALL="apt update -y && apt install -y curl openssl uuid-runtime net-tools iproute2"
 elif command -v yum >/dev/null 2>&1; then
     C_LIB_SUFFIX="-linux"
-    PKG_INSTALL="yum install -y curl openssl uuid net-tools iproute psmisc"
+    PKG_INSTALL="yum install -y curl openssl uuid net-tools iproute"
 else
     echo "❌ 不支持的系统类型。"
     exit 1
@@ -118,9 +123,15 @@ congestion_control = { controller = "bbr", initial_window = 4194304 }
 EOF
 echo "✅ 配置文件生成完成: $CONF_PATH"
 
+# ------------------ 获取公网 IP ------------------
+PUBLIC_IP=$(curl -s --connect-timeout 5 https://api.ipify.org || echo "")
+if [[ -z "$PUBLIC_IP" ]]; then
+    echo "⚠️ 无法自动获取公网 IP，请手动指定"
+    read -p "请输入你的公网 IP: " PUBLIC_IP
+fi
+
 # ------------------ 生成 TUIC 链接 ------------------
-IP=$(curl -s --connect-timeout 5 https://api.ipify.org || echo "YOUR_IP")
-LINK="tuic://${UUID}:${PASS}@${IP}:${PORT}?congestion_control=bbr&alpn=h3&allowInsecure=1&sni=${MASQ_DOMAIN}&udp_relay_mode=native&disable_sni=0&reduce_rtt=1#TUIC-${IP}"
+LINK="tuic://${UUID}:${PASS}@${PUBLIC_IP}:${PORT}?congestion_control=bbr&alpn=h3&allowInsecure=1&sni=${MASQ_DOMAIN}&udp_relay_mode=native&disable_sni=0&reduce_rtt=1#TUIC-${PUBLIC_IP}"
 echo "$LINK" > "$LINK_PATH"
 echo "📱 TUIC 链接: $LINK"
 echo "🔗 已保存至: $LINK_PATH"
@@ -128,15 +139,16 @@ echo "🔗 已保存至: $LINK_PATH"
 # ------------------ 创建启动脚本 ------------------
 cat > "$START_SH" <<EOF
 #!/bin/bash
+mkdir -p "$LOG_DIR"
 while true; do
-  "$BIN_PATH" -c "$CONF_PATH" >> "$LOG_FILE" 2>&1
-  echo "⚠️ TUIC 已退出，5秒后自动重启..." >> "$LOG_FILE" 2>&1
+  "$BIN_PATH" -c "$CONF_PATH" >>"$LOG_FILE" 2>&1
+  echo "⚠️ TUIC 已退出，5秒后自动重启..."
   sleep 5
 done
 EOF
 chmod +x "$START_SH"
 
-# ------------------ Systemd 守护 ------------------
+# ------------------ systemd 守护 ------------------
 if command -v systemctl >/dev/null 2>&1; then
     cat > /etc/systemd/system/tuic-server.service <<EOF
 [Unit]
@@ -147,8 +159,7 @@ After=network.target
 ExecStart=$BIN_PATH -c $CONF_PATH
 Restart=always
 RestartSec=5
-StandardOutput=file:$LOG_FILE
-StandardError=file:$LOG_FILE
+WorkingDirectory=$WORK_DIR
 
 [Install]
 WantedBy=multi-user.target
@@ -162,7 +173,7 @@ else
     echo "🌀 使用 nohup 守护 TUIC 进程"
 fi
 
-# ------------------ 防火墙放行 ------------------
+# ------------------ 放行端口 ------------------
 if command -v ufw >/dev/null 2>&1; then
     ufw allow "$PORT"/tcp >/dev/null 2>&1 || true
     ufw allow "$PORT"/udp >/dev/null 2>&1 || true
@@ -172,7 +183,7 @@ elif command -v iptables >/dev/null 2>&1; then
 fi
 echo "🧱 已放行 TCP/UDP 端口: $PORT"
 
-# ------------------ 显示运行状态 ------------------
+# ------------------ 显示状态 ------------------
 sleep 1
 echo ""
 echo "✅ TUIC 部署完成！"
@@ -180,4 +191,4 @@ echo "📄 配置文件: $CONF_PATH"
 echo "🔗 节点链接: $LINK_PATH"
 echo "📜 日志路径: $LOG_FILE"
 echo "⚙️ TUIC 运行状态:"
-ps -ef | grep tuic | grep -v grep || echo "⚠️ TUIC 未运行，请检查配置或日志"
+ps -ef | grep tuic | grep -v grep || echo "⚠️ TUIC 进程未检测到，请检查配置或防火墙"
