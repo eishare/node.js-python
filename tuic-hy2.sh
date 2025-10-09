@@ -1,18 +1,11 @@
 #!/bin/bash
-# ==========================================
-# 🌐 通用 TUIC 安装脚本（含公网IP自动识别 + SNI 修复）
-# 适配 Alpine / Debian / Ubuntu / Claw Cloud 容器
-# 作者: eishare 2025
-# ==========================================
-
 set -e
 PORT=${1:-443}
 WORK_DIR="/root/tuic"
-TUIC_BIN="tuic-server"
+TUIC_BIN="$WORK_DIR/tuic-server"
 CONFIG_FILE="$WORK_DIR/config.json"
-SERVICE_FILE="/etc/systemd/system/tuic.service"
+LOG_FILE="$WORK_DIR/tuic.log"
 
-# 检测系统
 detect_os() {
     if [ -f /etc/alpine-release ]; then
         OS="alpine"
@@ -25,24 +18,19 @@ detect_os() {
     fi
 }
 
-# 安装依赖
 install_deps() {
-    echo "🔧 安装依赖中..."
+    echo "🔧 检查依赖..."
     if [ "$OS" = "alpine" ]; then
-        apk add --no-cache curl bash openssl coreutils procps iproute2
+        apk add --no-cache bash curl openssl coreutils procps iproute2
     else
-        apt update -y && apt install -y curl bash openssl coreutils procps iproute2
+        apt update -y && apt install -y bash curl openssl coreutils procps iproute2
     fi
-    echo "✅ 依赖安装完成"
 }
 
-# 获取公网 IP
 get_public_ip() {
     IP=$(curl -s ipv4.icanhazip.com || curl -s ifconfig.me || echo "127.0.0.1")
-    echo "🌐 检测到公网 IP: $IP"
 }
 
-# 生成证书、UUID
 gen_certs() {
     mkdir -p "$WORK_DIR"
     cd "$WORK_DIR"
@@ -52,29 +40,20 @@ gen_certs() {
     openssl req -new -x509 -days 3650 -key tuic.key -out tuic.crt -subj "/CN=$IP"
 }
 
-# 下载 TUIC
 install_tuic() {
     cd "$WORK_DIR"
     ARCH=$(uname -m)
-    case "$ARCH" in
-        x86_64) ARCH="x86_64" ;;
-        aarch64) ARCH="aarch64" ;;
-        armv7l) ARCH="armv7" ;;
-        *) echo "❌ 不支持的架构: $ARCH"; exit 1 ;;
-    esac
+    [ "$ARCH" = "x86_64" ] && ARCH="x86_64"
     URL="https://github.com/Itsusinn/tuic/releases/download/v1.5.2/tuic-server-${ARCH}-linux"
     curl -L -o "$TUIC_BIN" "$URL"
     chmod +x "$TUIC_BIN"
 }
 
-# 写入配置文件
 create_config() {
     cat > "$CONFIG_FILE" <<EOF
 {
     "server": "0.0.0.0:${PORT}",
-    "users": {
-        "${UUID}": "${PASS}"
-    },
+    "users": { "${UUID}": "${PASS}" },
     "certificate": "${WORK_DIR}/tuic.crt",
     "private_key": "${WORK_DIR}/tuic.key",
     "congestion_control": "bbr",
@@ -82,53 +61,44 @@ create_config() {
     "log_level": "info"
 }
 EOF
-    echo "✅ 配置文件生成完成"
 }
 
-# 输出节点信息
-show_info() {
-    LINK="tuic://${UUID}:${PASS}@${IP}:${PORT}?congestion_control=bbr&sni=${IP}#TUIC-${PORT}"
-    echo "$LINK" > "$WORK_DIR/tuic_link.txt"
-    echo "✅ 节点链接写入 $WORK_DIR/tuic_link.txt"
-    echo "🔗 $LINK"
-}
-
-# 创建启动脚本 / systemd
-create_service() {
-    if [ "$OS" = "alpine" ]; then
-        cat > "$WORK_DIR/start.sh" <<EOF
-#!/bin/bash
-cd $WORK_DIR
-nohup $WORK_DIR/$TUIC_BIN -c $CONFIG_FILE > $WORK_DIR/tuic.log 2>&1 &
-echo \$! > $WORK_DIR/tuic.pid
-EOF
-        chmod +x "$WORK_DIR/start.sh"
-        echo "✅ 可执行：bash /root/tuic/start.sh 启动 TUIC"
-    else
-        cat > "$SERVICE_FILE" <<EOF
+start_tuic() {
+    echo "🚀 启动 TUIC..."
+    if command -v systemctl >/dev/null 2>&1; then
+        cat > /etc/systemd/system/tuic.service <<EOF
 [Unit]
 Description=TUIC Server
 After=network.target
-
 [Service]
-ExecStart=$WORK_DIR/$TUIC_BIN -c $CONFIG_FILE
-WorkingDirectory=$WORK_DIR
+ExecStart=$TUIC_BIN -c $CONFIG_FILE
 Restart=always
 RestartSec=3
-User=root
-LimitNOFILE=65535
-
 [Install]
 WantedBy=multi-user.target
 EOF
         systemctl daemon-reload
         systemctl enable tuic
         systemctl restart tuic
-        echo "✅ 已创建 systemd 服务 tuic 并自动启动"
+    else
+        # 无 systemd，使用 nohup 后台守护
+        nohup bash -c "
+        while true; do
+            $TUIC_BIN -c $CONFIG_FILE >> $LOG_FILE 2>&1
+            echo 'TUIC 已退出，5 秒后重启...' >> $LOG_FILE
+            sleep 5
+        done
+        " >/dev/null 2>&1 &
+        echo "✅ TUIC 后台守护启动成功 (nohup 模式)"
     fi
 }
 
-# 主逻辑
+show_info() {
+    LINK="tuic://${UUID}:${PASS}@${IP}:${PORT}?congestion_control=bbr&sni=${IP}#TUIC-${PORT}"
+    echo "$LINK" > "$WORK_DIR/tuic_link.txt"
+    echo "🔗 $LINK"
+}
+
 main() {
     detect_os
     install_deps
@@ -136,10 +106,9 @@ main() {
     gen_certs
     install_tuic
     create_config
-    create_service
+    start_tuic
     show_info
     echo "🎉 TUIC 部署完成"
-    echo "📁 目录: $WORK_DIR"
 }
 
 main
