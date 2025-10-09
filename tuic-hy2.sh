@@ -1,22 +1,25 @@
 #!/bin/bash
 # =========================================
-# TUIC v5 自动部署增强版 (爪云 NAT / Alpine / Ubuntu / Debian)
+# TUIC v5 自动部署增强版 (适配 Alpine / Ubuntu / Debian)
+# 支持分目录挂载，持久化稳定
 # by eishare / 2025
 # =========================================
 
 set -euo pipefail
 IFS=$'\n\t'
 
+# ------------------ 基本配置 ------------------
 TUIC_VERSION="1.5.2"
-WORK_DIR="/tuic"
-BIN_PATH="$WORK_DIR/tuic-server"
-CONF_PATH="$WORK_DIR/server.toml"
-CERT_PEM="$WORK_DIR/tuic-cert.pem"
-KEY_PEM="$WORK_DIR/tuic-key.pem"
-LINK_PATH="$WORK_DIR/tuic_link.txt"
+WORK_DIR="/root/tuic"
+BIN_DIR="$WORK_DIR/bin"
+DATA_DIR="$WORK_DIR/data"
+LOG_DIR="$WORK_DIR/logs"
+BIN_PATH="$BIN_DIR/tuic-server"
+CONF_PATH="$DATA_DIR/server.toml"
+CERT_PEM="$DATA_DIR/tuic-cert.pem"
+KEY_PEM="$DATA_DIR/tuic-key.pem"
+LINK_PATH="$DATA_DIR/tuic_link.txt"
 START_SH="$WORK_DIR/start.sh"
-LOG_DIR="/var/log/tuic"
-LOG_FILE="$LOG_DIR/tuic.log"
 MASQ_DOMAIN="www.bing.com"
 
 # ------------------ 卸载功能 ------------------
@@ -24,23 +27,20 @@ if [[ "${1:-}" == "uninstall" ]]; then
     echo "🧹 正在卸载 TUIC..."
     pkill -f tuic-server || true
     rm -rf "$WORK_DIR"
-    rm -rf "$LOG_DIR"
-    if command -v systemctl >/dev/null 2>&1; then
-        systemctl disable tuic-server.service 2>/dev/null || true
-        rm -f /etc/systemd/system/tuic-server.service
-    fi
+    systemctl disable tuic-server.service 2>/dev/null || true
+    rm -f /etc/systemd/system/tuic-server.service
     echo "✅ TUIC 已完全卸载。"
     exit 0
 fi
 
-# ------------------ 检查端口 ------------------
+# ------------------ 端口 ------------------
 if [[ $# -ge 1 ]]; then
     PORT="$1"
 else
     PORT="443"
 fi
 
-# ------------------ 检查系统 ------------------
+# ------------------ 系统检测 ------------------
 echo "🔍 检查系统信息..."
 ARCH=$(uname -m)
 [[ "$ARCH" == "x86_64" || "$ARCH" == "amd64" ]] && ARCH="x86_64"
@@ -48,13 +48,13 @@ ARCH=$(uname -m)
 
 if grep -qi alpine /etc/os-release; then
     C_LIB_SUFFIX="-linux-musl"
-    PKG_INSTALL="apk add --no-cache bash curl openssl util-linux net-tools iproute2"
+    PKG_INSTALL="apk add --no-cache bash curl openssl coreutils grep sed util-linux net-tools iproute2 psmisc"
 elif command -v apt >/dev/null 2>&1; then
     C_LIB_SUFFIX="-linux"
-    PKG_INSTALL="apt update -y && apt install -y curl openssl uuid-runtime net-tools iproute2"
+    PKG_INSTALL="apt update -y && apt install -y curl openssl uuid-runtime net-tools iproute2 procps"
 elif command -v yum >/dev/null 2>&1; then
     C_LIB_SUFFIX="-linux"
-    PKG_INSTALL="yum install -y curl openssl uuid net-tools iproute"
+    PKG_INSTALL="yum install -y curl openssl uuid net-tools iproute psmisc"
 else
     echo "❌ 不支持的系统类型。"
     exit 1
@@ -66,7 +66,7 @@ eval "$PKG_INSTALL" >/dev/null 2>&1
 echo "✅ 依赖安装完成"
 
 # ------------------ 创建目录 ------------------
-mkdir -p "$WORK_DIR" "$LOG_DIR"
+mkdir -p "$BIN_DIR" "$DATA_DIR" "$LOG_DIR"
 cd "$WORK_DIR"
 
 # ------------------ 下载 TUIC ------------------
@@ -121,34 +121,29 @@ receive_window = 16777216
 max_idle_time = "20s"
 congestion_control = { controller = "bbr", initial_window = 4194304 }
 EOF
+
 echo "✅ 配置文件生成完成: $CONF_PATH"
 
-# ------------------ 获取公网 IP ------------------
-PUBLIC_IP=$(curl -s --connect-timeout 5 https://api.ipify.org || echo "")
-if [[ -z "$PUBLIC_IP" ]]; then
-    echo "⚠️ 无法自动获取公网 IP，请手动指定"
-    read -p "请输入你的公网 IP: " PUBLIC_IP
-fi
-
 # ------------------ 生成 TUIC 链接 ------------------
-LINK="tuic://${UUID}:${PASS}@${PUBLIC_IP}:${PORT}?congestion_control=bbr&alpn=h3&allowInsecure=1&sni=${MASQ_DOMAIN}&udp_relay_mode=native&disable_sni=0&reduce_rtt=1#TUIC-${PUBLIC_IP}"
+IP=$(curl -s --connect-timeout 5 https://api.ipify.org || echo "YOUR_IP")
+LINK="tuic://${UUID}:${PASS}@${IP}:${PORT}?congestion_control=bbr&alpn=h3&allowInsecure=1&sni=${MASQ_DOMAIN}&udp_relay_mode=native&disable_sni=0&reduce_rtt=1#TUIC-${IP}"
 echo "$LINK" > "$LINK_PATH"
+
 echo "📱 TUIC 链接: $LINK"
 echo "🔗 已保存至: $LINK_PATH"
 
 # ------------------ 创建启动脚本 ------------------
 cat > "$START_SH" <<EOF
 #!/bin/bash
-mkdir -p "$LOG_DIR"
 while true; do
-  "$BIN_PATH" -c "$CONF_PATH" >>"$LOG_FILE" 2>&1
-  echo "⚠️ TUIC 已退出，5秒后自动重启..."
+  "$BIN_PATH" -c "$CONF_PATH" >> "$LOG_DIR/tuic.log" 2>&1
+  echo "⚠️ TUIC 已退出，5秒后自动重启..." >> "$LOG_DIR/tuic.log"
   sleep 5
 done
 EOF
 chmod +x "$START_SH"
 
-# ------------------ systemd 守护 ------------------
+# ------------------ Systemd 守护 ------------------
 if command -v systemctl >/dev/null 2>&1; then
     cat > /etc/systemd/system/tuic-server.service <<EOF
 [Unit]
@@ -157,9 +152,9 @@ After=network.target
 
 [Service]
 ExecStart=$BIN_PATH -c $CONF_PATH
+WorkingDirectory=$WORK_DIR
 Restart=always
 RestartSec=5
-WorkingDirectory=$WORK_DIR
 
 [Install]
 WantedBy=multi-user.target
@@ -173,7 +168,7 @@ else
     echo "🌀 使用 nohup 守护 TUIC 进程"
 fi
 
-# ------------------ 放行端口 ------------------
+# ------------------ 防火墙放行 ------------------
 if command -v ufw >/dev/null 2>&1; then
     ufw allow "$PORT"/tcp >/dev/null 2>&1 || true
     ufw allow "$PORT"/udp >/dev/null 2>&1 || true
@@ -183,12 +178,17 @@ elif command -v iptables >/dev/null 2>&1; then
 fi
 echo "🧱 已放行 TCP/UDP 端口: $PORT"
 
-# ------------------ 显示状态 ------------------
+# ------------------ 显示运行状态 ------------------
 sleep 1
 echo ""
 echo "✅ TUIC 部署完成！"
 echo "📄 配置文件: $CONF_PATH"
 echo "🔗 节点链接: $LINK_PATH"
-echo "📜 日志路径: $LOG_FILE"
+echo "📜 日志路径: $LOG_DIR/tuic.log"
 echo "⚙️ TUIC 运行状态:"
-ps -ef | grep tuic | grep -v grep || echo "⚠️ TUIC 进程未检测到，请检查配置或防火墙"
+if command -v ps >/dev/null 2>&1; then
+    ps -ef | grep tuic-server | grep -v grep || echo "⚠️ TUIC 未检测到运行"
+else
+    echo "⚠️ ps 命令不可用，无法检测进程"
+fi
+echo "💡 使用: bash $0 uninstall 可卸载 TUIC"
