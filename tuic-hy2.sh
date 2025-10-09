@@ -1,7 +1,8 @@
 #!/bin/bash
 # =========================================
-# 🌀 TUIC v5 自动部署脚本 (单挂载 /root/tuic)
-# 适配：Alpine / Debian / Ubuntu
+# 🌀 TUIC v5 自动部署脚本 (挂载 /root/tuic)
+# 兼容: Alpine / Debian / Ubuntu / Claw Cloud
+# 支持: 环境变量 uuid (固定节点)
 # by eishare / 2025-10
 # =========================================
 
@@ -84,10 +85,17 @@ if [[ ! -f "$CERT_PEM" ]]; then
     echo "✅ 证书生成完成"
 fi
 
-# ------------------ 生成配置 ------------------
-UUID=$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid)
+# ------------------ UUID 设置 ------------------
+if [[ -n "${uuid:-}" ]]; then
+    UUID="$uuid"
+    echo "🔗 使用爪云环境变量 uuid: $UUID"
+else
+    UUID=$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid)
+    echo "⚙️ 未检测到环境变量 uuid，已自动生成: $UUID"
+fi
 PASS=$(openssl rand -hex 16)
 
+# ------------------ 生成配置 ------------------
 cat > "$CONF_PATH" <<EOF
 log_level = "info"
 server = "0.0.0.0:${PORT}"
@@ -121,14 +129,14 @@ EOF
 
 echo "✅ 配置文件生成完成: $CONF_PATH"
 
-# ------------------ 生成 TUIC 链接 ------------------
+# ------------------ TUIC 链接 ------------------
 IP=$(curl -s --connect-timeout 5 https://api.ipify.org || echo "YOUR_IP")
 LINK="tuic://${UUID}:${PASS}@${IP}:${PORT}?congestion_control=bbr&alpn=h3&allowInsecure=1&sni=${MASQ_DOMAIN}&udp_relay_mode=native&disable_sni=0&reduce_rtt=1#TUIC-${IP}"
 echo "$LINK" > "$LINK_PATH"
 echo "📱 TUIC 链接: $LINK"
 echo "🔗 已保存至: $LINK_PATH"
 
-# ------------------ 创建启动脚本 ------------------
+# ------------------ 启动脚本 ------------------
 cat > "$START_SH" <<EOF
 #!/bin/bash
 cd $WORK_DIR
@@ -140,7 +148,7 @@ done
 EOF
 chmod +x "$START_SH"
 
-# ------------------ Systemd 守护 ------------------
+# ------------------ 守护进程 ------------------
 if command -v systemctl >/dev/null 2>&1; then
     cat > /etc/systemd/system/tuic-server.service <<EOF
 [Unit]
@@ -165,7 +173,7 @@ else
     echo "🌀 使用 nohup 守护 TUIC 进程"
 fi
 
-# ------------------ 防火墙放行 ------------------
+# ------------------ 防火墙 ------------------
 if command -v ufw >/dev/null 2>&1; then
     ufw allow "$PORT"/tcp >/dev/null 2>&1 || true
     ufw allow "$PORT"/udp >/dev/null 2>&1 || true
@@ -175,7 +183,7 @@ elif command -v iptables >/dev/null 2>&1; then
 fi
 echo "🧱 已放行 TCP/UDP 端口: $PORT"
 
-# ------------------ 检查状态 ------------------
+# ------------------ 检查运行状态 ------------------
 sleep 2
 echo ""
 echo "✅ TUIC 部署完成！"
