@@ -1,7 +1,7 @@
 #!/bin/bash
 # =========================================
-# TUIC v5 自动部署增强版 (适配 Alpine / Ubuntu / Debian)
-# by eishare / 2025
+# TUIC v5 自修复持久化增强版 (适配 Alpine / Ubuntu / Debian)
+# by eishare / 2025-10
 # =========================================
 
 set -euo pipefail
@@ -20,20 +20,16 @@ MASQ_DOMAIN="www.bing.com"
 # ------------------ 卸载功能 ------------------
 if [[ "${1:-}" == "uninstall" ]]; then
     echo "🧹 正在卸载 TUIC..."
-    pkill -f tuic-server || true
+    pkill -f tuic-server >/dev/null 2>&1 || true
     rm -rf "$WORK_DIR"
-    systemctl disable tuic-server.service 2>/dev/null || true
+    systemctl disable tuic-server.service >/dev/null 2>&1 || true
     rm -f /etc/systemd/system/tuic-server.service
     echo "✅ TUIC 已完全卸载。"
     exit 0
 fi
 
-# ------------------ 检查端口 ------------------
-if [[ $# -ge 1 ]]; then
-    PORT="$1"
-else
-    PORT="443"
-fi
+# ------------------ 端口设置 ------------------
+PORT="${1:-443}"
 
 # ------------------ 检查系统 ------------------
 echo "🔍 检查系统信息..."
@@ -43,13 +39,13 @@ ARCH=$(uname -m)
 
 if grep -qi alpine /etc/os-release; then
     C_LIB_SUFFIX="-linux-musl"
-    PKG_INSTALL="apk add --no-cache bash curl openssl util-linux net-tools iproute2"
+    PKG_INSTALL="apk add --no-cache bash curl openssl procps net-tools iproute2"
 elif command -v apt >/dev/null 2>&1; then
     C_LIB_SUFFIX="-linux"
-    PKG_INSTALL="apt update -y && apt install -y curl openssl uuid-runtime net-tools iproute2"
+    PKG_INSTALL="apt update -y && apt install -y bash curl openssl uuid-runtime procps net-tools iproute2"
 elif command -v yum >/dev/null 2>&1; then
     C_LIB_SUFFIX="-linux"
-    PKG_INSTALL="yum install -y curl openssl uuid net-tools iproute"
+    PKG_INSTALL="yum install -y bash curl openssl uuid net-tools iproute"
 else
     echo "❌ 不支持的系统类型。"
     exit 1
@@ -57,7 +53,7 @@ fi
 
 # ------------------ 安装依赖 ------------------
 echo "🔧 检查并安装依赖..."
-eval "$PKG_INSTALL" >/dev/null 2>&1
+eval "$PKG_INSTALL" >/dev/null 2>&1 || true
 echo "✅ 依赖安装完成"
 
 # ------------------ 创建目录 ------------------
@@ -67,13 +63,9 @@ cd "$WORK_DIR"
 # ------------------ 下载 TUIC ------------------
 URL="https://github.com/Itsusinn/tuic/releases/download/v${TUIC_VERSION}/tuic-server-${ARCH}${C_LIB_SUFFIX}"
 echo "⬇️ 下载 TUIC: $URL"
-if curl -L -f -o "$BIN_PATH" "$URL"; then
-    chmod +x "$BIN_PATH"
-    echo "✅ TUIC 下载完成"
-else
-    echo "❌ 下载失败，请检查网络或版本号"
-    exit 1
-fi
+curl -L -f -o "$BIN_PATH" "$URL" || { echo "❌ 下载失败"; exit 1; }
+chmod +x "$BIN_PATH"
+echo "✅ TUIC 下载完成"
 
 # ------------------ 生成证书 ------------------
 if [[ ! -f "$CERT_PEM" ]]; then
@@ -116,29 +108,37 @@ receive_window = 16777216
 max_idle_time = "20s"
 congestion_control = { controller = "bbr", initial_window = 4194304 }
 EOF
-
-echo "✅ 配置文件生成完成: $CONF_PATH"
+echo "✅ 配置文件生成完成"
 
 # ------------------ 生成 TUIC 链接 ------------------
 IP=$(curl -s --connect-timeout 5 https://api.ipify.org || echo "YOUR_IP")
 LINK="tuic://${UUID}:${PASS}@${IP}:${PORT}?congestion_control=bbr&alpn=h3&allowInsecure=1&sni=${MASQ_DOMAIN}&udp_relay_mode=native&disable_sni=0&reduce_rtt=1#TUIC-${IP}"
 echo "$LINK" > "$LINK_PATH"
-
-echo "📱 TUIC 链接: $LINK"
+echo "📱 节点链接: $LINK"
 echo "🔗 已保存至: $LINK_PATH"
 
-# ------------------ 创建启动脚本 ------------------
-cat > "$START_SH" <<EOF
-#!/bin/bash
+# ------------------ 自修复启动脚本 ------------------
+cat > "$START_SH" <<'EOF'
+#!/bin/sh
+# 自动修复依赖 + 自启动 TUIC
+if ! command -v bash >/dev/null 2>&1; then
+    if [ -f /etc/alpine-release ]; then
+        apk add --no-cache bash curl openssl procps net-tools iproute2
+    elif command -v apt >/dev/null 2>&1; then
+        apt update -y && apt install -y bash curl openssl procps net-tools iproute2
+    fi
+fi
 while true; do
-  "$BIN_PATH" -c "$CONF_PATH"
-  echo "⚠️ TUIC 已退出，5秒后自动重启..."
-  sleep 5
+    if ! pgrep -f tuic-server >/dev/null 2>&1; then
+        nohup /root/tuic/tuic-server -c /root/tuic/server.toml >/root/tuic/tuic.log 2>&1 &
+        echo "🔄 TUIC 已启动"
+    fi
+    sleep 10
 done
 EOF
 chmod +x "$START_SH"
 
-# ------------------ Systemd 守护 ------------------
+# ------------------ 创建守护方式 ------------------
 if command -v systemctl >/dev/null 2>&1; then
     cat > /etc/systemd/system/tuic-server.service <<EOF
 [Unit]
@@ -158,8 +158,8 @@ EOF
     systemctl restart tuic-server
     echo "🧩 已创建 systemd 服务 tuic-server"
 else
-    nohup bash "$START_SH" >/dev/null 2>&1 &
-    echo "🌀 使用 nohup 守护 TUIC 进程"
+    nohup sh "$START_SH" >/dev/null 2>&1 &
+    echo "🌀 使用 nohup 守护 TUIC 进程（含自修复机制）"
 fi
 
 # ------------------ 防火墙放行 ------------------
@@ -172,11 +172,12 @@ elif command -v iptables >/dev/null 2>&1; then
 fi
 echo "🧱 已放行 TCP/UDP 端口: $PORT"
 
-# ------------------ 显示运行状态 ------------------
-sleep 1
+# ------------------ 结束提示 ------------------
 echo ""
 echo "✅ TUIC 部署完成！"
 echo "📄 配置文件: $CONF_PATH"
 echo "🔗 节点链接: $LINK_PATH"
-echo "⚙️ 服务状态:"
-netstat -tulnp | grep tuic || echo "⚠️ 未检测到监听，请检查配置或防火墙"
+echo "⚙️ 自动修复脚本: $START_SH"
+echo ""
+echo "💡 如节点掉线，可运行: bash $START_SH"
+echo "💡 卸载命令: bash tuic.sh uninstall"
