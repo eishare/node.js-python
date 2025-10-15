@@ -1,8 +1,8 @@
 #!/bin/bash
 # ============================================================
-# 一键部署 Argo(VLESS+WS+TLS) + TUIC 节点 (非root兼容)
-# 支持 Alpine / Debian / Ubuntu / CentOS
-# by eishare (2025)
+# 一键部署 Argo(VLESS+WS+TLS) + TUIC 节点 (兼容非root)
+# 适配: Alpine / Debian / Ubuntu / CentOS
+# 作者: eishare (2025)
 # ============================================================
 
 set -e
@@ -12,10 +12,10 @@ LOG_FILE="deploy.log"
 exec > >(tee -a "$LOG_FILE") 2>&1
 
 echo "🚀 Argo + TUIC 一键部署启动..."
-echo "📜 日志将保存到: $LOG_FILE"
+echo "📜 日志保存到: $LOG_FILE"
 
 # ============================================================
-# 检查环境
+# 检查并安装依赖（兼容非root）
 # ============================================================
 install_base() {
   echo "📦 检查系统环境..."
@@ -32,7 +32,7 @@ install_base() {
 
   for cmd in curl unzip openssl; do
     if ! command -v "$cmd" >/dev/null 2>&1; then
-      echo "📥 正在安装依赖: $cmd"
+      echo "📥 安装依赖: $cmd"
       case $PKG in
         apt)  sudo apt update -y && sudo apt install -y "$cmd" ;;
         yum)  sudo yum install -y "$cmd" ;;
@@ -45,7 +45,7 @@ install_base() {
 install_base
 
 # ============================================================
-# TUIC 配置部分
+# TUIC 配置
 # ============================================================
 TUIC_PORT="${1:-}"
 TUIC_DIR="./tuic"
@@ -57,7 +57,7 @@ if [[ -z "$TUIC_PORT" ]]; then
 fi
 
 if ! [[ "$TUIC_PORT" =~ ^[0-9]+$ ]]; then
-  echo "❌ 端口格式错误"
+  echo "❌ 无效端口"
   exit 1
 fi
 
@@ -80,7 +80,7 @@ if [[ ! -f "$CERT_PEM" ]]; then
     -keyout "$KEY_PEM" -out "$CERT_PEM" -subj "/CN=${MASQ_DOMAIN}" -days 365 -nodes >/dev/null 2>&1
 fi
 
-# -------------------- TUIC 配置 --------------------
+# -------------------- TUIC 配置文件 --------------------
 TUIC_UUID=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen)
 TUIC_PASS=$(openssl rand -hex 8)
 
@@ -103,12 +103,12 @@ cat > tuic_link.txt <<EOF
 tuic://${TUIC_UUID}:${TUIC_PASS}@${TUIC_IP}:${TUIC_PORT}?congestion_control=bbr&alpn=h3&allowInsecure=1&sni=${MASQ_DOMAIN}#TUIC-${TUIC_IP}
 EOF
 
-echo "✅ TUIC 已配置完成"
+echo "✅ TUIC 配置完成"
 echo "🔗 TUIC 链接: $(cat tuic_link.txt)"
 cd ..
 
 # ============================================================
-# Argo + VLESS 配置部分
+# Argo + VLESS 配置
 # ============================================================
 XRAY_DIR="./xray"
 mkdir -p "$XRAY_DIR"
@@ -133,7 +133,7 @@ cat > config.json <<EOF
     {
       "port": 443,
       "protocol": "vless",
-      "settings": { "clients": [{ "id": "${UUID}", "flow": "" }], "decryption": "none" },
+      "settings": { "clients": [{ "id": "${UUID}" }], "decryption": "none" },
       "streamSettings": {
         "network": "ws",
         "security": "tls",
@@ -154,11 +154,18 @@ if [[ ! -x "$ARGO_BIN" ]]; then
   chmod +x "$ARGO_BIN"
 fi
 
-# -------------------- 运行 Argo 临时隧道 --------------------
+# -------------------- 启动 Argo 临时隧道 --------------------
 echo "🌐 启动临时 Argo 隧道..."
-TUNNEL_URL=$($ARGO_BIN tunnel --url localhost:443 2>/dev/null | grep -Eo 'https://[-0-9a-zA-Z]+\.trycloudflare\.com' | head -n 1)
+$ARGO_BIN tunnel --url localhost:443 > argo.log 2>&1 &
+sleep 8
 
-echo "✅ 临时隧道地址: $TUNNEL_URL"
+TUNNEL_URL=$(grep -Eo 'https://[-0-9a-zA-Z]+\.trycloudflare\.com' argo.log | head -n 1)
+
+if [[ -z "$TUNNEL_URL" ]]; then
+  echo "❌ 未能获取 Argo 隧道地址，请稍后查看 argo.log"
+else
+  echo "✅ 临时隧道地址: $TUNNEL_URL"
+fi
 
 cat > vless_link.txt <<EOF
 vless://${UUID}@${TUNNEL_URL#https://}:443?encryption=none&security=tls&type=ws&host=${MASQ_DOMAIN}&path=/argo#Argo-${MASQ_DOMAIN}
@@ -181,8 +188,8 @@ echo ""
 echo "✅ 所有服务已启动"
 echo "📄 TUIC 配置: $(pwd)/tuic/server.toml"
 echo "📄 VLESS 配置: $(pwd)/xray/config.json"
-echo "🪄 TUIC 链接已保存到 tuic/tuic_link.txt"
-echo "🪄 VLESS 链接已保存到 xray/vless_link.txt"
-echo "📜 部署日志保存在 $LOG_FILE"
+echo "🪄 TUIC 链接: $(pwd)/tuic/tuic_link.txt"
+echo "🪄 VLESS 链接: $(pwd)/xray/vless_link.txt"
+echo "📜 日志文件: $LOG_FILE"
 echo ""
 echo "🎉 部署完成！"
