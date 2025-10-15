@@ -6,7 +6,7 @@
 # ============================================================
 
 set -e
-MASQ_DOMAIN="www.bing.com"   # SNI伪装域名
+MASQ_DOMAIN="www.bing.com"
 LOG_FILE="deploy.log"
 
 exec > >(tee -a "$LOG_FILE") 2>&1
@@ -63,7 +63,6 @@ fi
 
 echo "✅ TUIC 端口: $TUIC_PORT"
 
-# -------------------- 下载 tuic-server --------------------
 TUIC_BIN="./tuic-server"
 if [[ ! -x "$TUIC_BIN" ]]; then
   echo "📥 下载 tuic-server..."
@@ -71,16 +70,14 @@ if [[ ! -x "$TUIC_BIN" ]]; then
   chmod +x "$TUIC_BIN"
 fi
 
-# -------------------- 生成证书 --------------------
 CERT_PEM="tuic-cert.pem"
 KEY_PEM="tuic-key.pem"
 if [[ ! -f "$CERT_PEM" ]]; then
-  echo "🔐 生成自签证书..."
+  echo "🔐 生成 TUIC 自签证书..."
   openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
     -keyout "$KEY_PEM" -out "$CERT_PEM" -subj "/CN=${MASQ_DOMAIN}" -days 365 -nodes >/dev/null 2>&1
 fi
 
-# -------------------- TUIC 配置文件 --------------------
 TUIC_UUID=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen)
 TUIC_PASS=$(openssl rand -hex 8)
 
@@ -114,7 +111,6 @@ XRAY_DIR="./xray"
 mkdir -p "$XRAY_DIR"
 cd "$XRAY_DIR"
 
-# -------------------- 下载 Xray --------------------
 XRAY_BIN="./xray"
 if [[ ! -x "$XRAY_BIN" ]]; then
   echo "📥 下载 Xray 核心..."
@@ -124,16 +120,14 @@ if [[ ! -x "$XRAY_BIN" ]]; then
   rm -f xray.zip
 fi
 
-# -------------------- 生成证书 --------------------
 CERT_PEM="vless-cert.pem"
 KEY_PEM="vless-key.pem"
 if [[ ! -f "$CERT_PEM" ]]; then
-  echo "🔐 生成自签证书..."
+  echo "🔐 生成 VLESS 自签证书..."
   openssl req -x509 -newkey rsa:2048 -keyout "$KEY_PEM" -out "$CERT_PEM" -days 365 \
     -subj "/CN=${MASQ_DOMAIN}" -nodes >/dev/null 2>&1
 fi
 
-# -------------------- VLESS 配置 --------------------
 UUID=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen)
 
 cat > config.json <<EOF
@@ -166,7 +160,30 @@ cat > config.json <<EOF
 }
 EOF
 
-# -------------------- 生成 VLESS 链接 --------------------
 VLESS_IP=$(curl -s https://api.ipify.org || echo "your_server_ip")
+
 cat > vless_link.txt <<EOF
-vless://${UUID}@${VLESS_IP}:443?encryption=none&_
+vless://${UUID}@${VLESS_IP}:443?encryption=none&security=tls&type=ws&host=${MASQ_DOMAIN}&path=/vless#VLESS-${VLESS_IP}
+EOF
+
+echo "✅ VLESS 配置完成"
+echo "🔗 VLESS 链接: $(cat vless_link.txt)"
+cd ..
+
+# ============================================================
+# 启动后台服务
+# ============================================================
+echo "🚀 启动 TUIC 与 VLESS 服务..."
+
+nohup ./tuic/tuic-server -c ./tuic/server.toml >/dev/null 2>&1 &
+nohup ./xray/xray -c ./xray/config.json >/dev/null 2>&1 &
+
+echo ""
+echo "✅ 所有服务已启动"
+echo "📄 TUIC 配置: $(pwd)/tuic/server.toml"
+echo "📄 VLESS 配置: $(pwd)/xray/config.json"
+echo "🪄 TUIC 链接: $(pwd)/tuic/tuic_link.txt"
+echo "🪄 VLESS 链接: $(pwd)/xray/vless_link.txt"
+echo "📜 日志文件: $LOG_FILE"
+echo ""
+echo "🎉 部署完成！"
