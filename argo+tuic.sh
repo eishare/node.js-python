@@ -1,13 +1,13 @@
 #!/bin/bash
 # ============================================================
-# 一键部署 VLESS(WS+TLS,443) + TUIC 双协议节点
-# 适配: Alpine / Debian / Ubuntu / CentOS / 非root环境
-# 修正版：修复 EOF 问题 & CPU 占用优化
+# 稳定版 VLESS(WS+TLS,443) + TUIC 双协议部署
+# 修正版：固定公网IP + Xray 校验 + 非 root 环境
 # ============================================================
 
 set -e
 MASQ_DOMAIN="www.bing.com"
 LOG_FILE="deploy.log"
+PUBLIC_IP="${PUBLIC_IP:-}"
 
 # 日志输出
 exec > >(tee -a "$LOG_FILE") 2>&1
@@ -18,17 +18,30 @@ echo "📜 日志保存到: $LOG_FILE"
 # ============================================================
 # 检查依赖
 # ============================================================
-install_base() {
-    echo "📦 检查系统环境..."
-    if command -v curl >/dev/null 2>&1 && command -v openssl >/dev/null 2>&1; then
-        echo "✅ curl 与 openssl 已安装"
-    else
-        echo "❌ curl 或 openssl 未安装，请手动安装"
-        exit 1
-    fi
+check_deps() {
+    for cmd in curl openssl; do
+        if ! command -v $cmd >/dev/null 2>&1; then
+            echo "❌ 缺少依赖: $cmd，请手动安装"
+            exit 1
+        fi
+    done
 }
 
-install_base
+check_deps
+
+# ============================================================
+# 获取公网 IP
+# ============================================================
+if [[ -z "$PUBLIC_IP" ]]; then
+    PUBLIC_IP=$(curl -s https://api.ipify.org || true)
+fi
+
+if [[ -z "$PUBLIC_IP" ]]; then
+    echo "❌ 无法获取公网 IP，请设置环境变量 PUBLIC_IP"
+    exit 1
+fi
+
+echo "✅ 公网 IP: $PUBLIC_IP"
 
 # ============================================================
 # TUIC 配置
@@ -79,10 +92,8 @@ private_key = "${KEY_PEM}"
 alpn = ["h3"]
 EOF
 
-TUIC_IP=$(curl -s https://api.ipify.org || echo "your_server_ip")
-
 cat > tuic_link.txt <<EOF
-tuic://${TUIC_UUID}:${TUIC_PASS}@${TUIC_IP}:${TUIC_PORT}?congestion_control=bbr&alpn=h3&allowInsecure=1&sni=${MASQ_DOMAIN}#TUIC-${TUIC_IP}
+tuic://${TUIC_UUID}:${TUIC_PASS}@${PUBLIC_IP}:${TUIC_PORT}?congestion_control=bbr&alpn=h3&allowInsecure=1&sni=${MASQ_DOMAIN}#TUIC-${PUBLIC_IP}
 EOF
 
 echo "✅ TUIC 配置完成"
@@ -100,6 +111,10 @@ XRAY_BIN="./xray"
 if [[ ! -x "$XRAY_BIN" ]]; then
     echo "📥 下载 Xray 可执行文件..."
     curl -L -o "$XRAY_BIN" https://github.com/XTLS/Xray-core/releases/latest/download/xray-linux-64
+    if [[ ! -s "$XRAY_BIN" ]]; then
+        echo "❌ Xray 下载失败或文件损坏"
+        exit 1
+    fi
     chmod +x "$XRAY_BIN"
 fi
 
@@ -143,10 +158,8 @@ cat > config.json <<EOF
 }
 EOF
 
-VLESS_IP=$(curl -s https://api.ipify.org || echo "your_server_ip")
-
 cat > vless_link.txt <<EOF
-vless://${UUID}@${VLESS_IP}:443?encryption=none&security=tls&type=ws&host=${MASQ_DOMAIN}&path=/vless#VLESS-${VLESS_IP}
+vless://${UUID}@${PUBLIC_IP}:443?encryption=none&security=tls&type=ws&host=${MASQ_DOMAIN}&path=/vless#VLESS-${PUBLIC_IP}
 EOF
 
 echo "✅ VLESS 配置完成"
