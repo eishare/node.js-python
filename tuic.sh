@@ -1,40 +1,51 @@
 #!/bin/bash
-# TUIC v5 over QUIC 自动部署脚本（支持 Pterodactyl SERVER_PORT + 命令行参数）
+# =========================================================
+# TUIC v5 over QUIC 自动部署脚本（抗 QoS 增强版）
+# 支持 Pterodactyl SERVER_PORT + 命令行参数 + 自动优化
+# 作者：ChatGPT 增强版（GPT-5）
+# =========================================================
 set -euo pipefail
 IFS=$'\n\t'
 
-MASQ_DOMAIN="www.bing.com"    # 固定伪装域名
+MASQ_DOMAIN="www.bing.com"     # TLS 伪装域名
 SERVER_TOML="server.toml"
 CERT_PEM="tuic-cert.pem"
 KEY_PEM="tuic-key.pem"
 LINK_TXT="tuic_link.txt"
 TUIC_BIN="./tuic-server"
 
-# ===================== 输入端口或读取环境变量 =====================
+# ===================== 启用 BBR 拥塞控制 =====================
+enable_bbr() {
+  echo "⚙️ 检查并启用 BBR 拥塞控制..."
+  if sysctl net.ipv4.tcp_congestion_control 2>/dev/null | grep -q bbr; then
+    echo "✅ BBR 已启用"
+  else
+    echo "🚀 正在启用 BBR..."
+    sudo modprobe tcp_bbr 2>/dev/null || true
+    echo "tcp_bbr" | sudo tee -a /etc/modules-load.d/modules.conf >/dev/null 2>&1 || true
+    sudo sysctl -w net.core.default_qdisc=fq >/dev/null 2>&1
+    sudo sysctl -w net.ipv4.tcp_congestion_control=bbr >/dev/null 2>&1
+    echo "✅ BBR 启用完成"
+  fi
+}
+
+# ===================== 读取端口 =====================
 read_port() {
   if [[ $# -ge 1 && -n "${1:-}" ]]; then
     TUIC_PORT="$1"
-    echo "✅ 从命令行参数读取 TUIC(QUIC) 端口: $TUIC_PORT"
+    echo "✅ 从命令行参数读取 TUIC 端口: $TUIC_PORT"
     return
   fi
 
   if [[ -n "${SERVER_PORT:-}" ]]; then
     TUIC_PORT="$SERVER_PORT"
-    echo "✅ 从环境变量读取 TUIC(QUIC) 端口: $TUIC_PORT"
+    echo "✅ 从环境变量读取 TUIC 端口: $TUIC_PORT"
     return
   fi
 
-  local port
-  while true; do
-    echo "⚙️ 请输入 TUIC(QUIC) 端口 (1024-65535):"
-    read -rp "> " port
-    if [[ ! "$port" =~ ^[0-9]+$ || "$port" -lt 1024 || "$port" -gt 65535 ]]; then
-      echo "❌ 无效端口: $port"
-      continue
-    fi
-    TUIC_PORT="$port"
-    break
-  done
+  local DEFAULT_PORT=$((RANDOM % 40000 + 10000))
+  echo "⚙️ 未检测到端口，将使用随机端口: $DEFAULT_PORT"
+  TUIC_PORT="$DEFAULT_PORT"
 }
 
 # ===================== 加载已有配置 =====================
@@ -90,6 +101,7 @@ check_tuic_server() {
 
 # ===================== 生成配置文件 =====================
 generate_config() {
+  echo "⚙️ 正在生成 TUIC v5 配置文件（含抗 QoS 优化参数）..."
 cat > "$SERVER_TOML" <<EOF
 log_level = "off"
 server = "0.0.0.0:${TUIC_PORT}"
@@ -111,6 +123,8 @@ self_sign = false
 certificate = "$CERT_PEM"
 private_key = "$KEY_PEM"
 alpn = ["h3"]
+disable_sni = false
+server_name = "${MASQ_DOMAIN}"
 
 [restful]
 addr = "127.0.0.1:${TUIC_PORT}"
@@ -124,7 +138,8 @@ gso = true
 pmtu = true
 send_window = 33554432
 receive_window = 16777216
-max_idle_time = "20s"
+max_idle_time = "600s"
+heartbeat_interval = "15s"
 
 [quic.congestion_control]
 controller = "bbr"
@@ -144,7 +159,6 @@ generate_link() {
   cat > "$LINK_TXT" <<EOF
 tuic://${TUIC_UUID}:${TUIC_PASSWORD}@${ip}:${TUIC_PORT}?congestion_control=bbr&alpn=h3&allowInsecure=1&sni=${MASQ_DOMAIN}&udp_relay_mode=native&disable_sni=0&reduce_rtt=1&max_udp_relay_packet_size=8192#TUIC-${ip}
 EOF
-
   echo ""
   echo "📱 TUIC 链接已生成并保存到 $LINK_TXT"
   echo "🔗 链接内容："
@@ -154,16 +168,18 @@ EOF
 
 # ===================== 后台循环守护 =====================
 run_background_loop() {
-  echo "✅ 服务已启动，tuic-server 正在运行..."
+  echo "✅ TUIC 服务启动中..."
   while true; do
     "$TUIC_BIN" -c "$SERVER_TOML"
-    echo "⚠️ tuic-server 已退出，5秒后重启..."
+    echo "⚠️ tuic-server 已退出，5 秒后自动重启..."
     sleep 5
   done
 }
 
 # ===================== 主逻辑 =====================
 main() {
+  enable_bbr
+
   if ! load_existing_config; then
     echo "⚙️ 第一次运行，开始初始化..."
     read_port "$@"
@@ -186,5 +202,3 @@ main() {
 }
 
 main "$@"
-
-
