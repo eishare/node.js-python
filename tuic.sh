@@ -1,204 +1,155 @@
 #!/bin/bash
-# =========================================================
-# TUIC v5 over QUIC 自动部署脚本（抗 QoS 增强版）
-# 支持 Pterodactyl SERVER_PORT + 命令行参数 + 自动优化
-# 作者：ChatGPT 增强版（GPT-5）
-# =========================================================
-set -euo pipefail
-IFS=$'\n\t'
+set -e
 
-MASQ_DOMAIN="www.bing.com"     # TLS 伪装域名
-SERVER_TOML="server.toml"
-CERT_PEM="tuic-cert.pem"
-KEY_PEM="tuic-key.pem"
-LINK_TXT="tuic_link.txt"
-TUIC_BIN="./tuic-server"
+# ========= TUIC v5 一键部署增强版 ========= #
+# 作者: Eishare（优化 by ChatGPT）
+# 功能: 自动部署 TUIC Server + 抗 QoS 优化 + 智能 BBR 检测
+# ======================================== #
 
-# ===================== 启用 BBR 拥塞控制 =====================
+# ------------------------------
+# 🧩 系统检测与准备
+# ------------------------------
+check_root() {
+  if [ "$(id -u)" -ne 0 ]; then
+    echo "⚠️ 请使用 root 用户运行此脚本"
+    exit 1
+  fi
+}
+
+install_deps() {
+  echo "📦 安装依赖..."
+  if command -v apt >/dev/null 2>&1; then
+    apt update -y && apt install -y curl wget jq tar
+  elif command -v apk >/dev/null 2>&1; then
+    apk add --no-cache curl wget jq tar
+  elif command -v yum >/dev/null 2>&1; then
+    yum install -y curl wget jq tar
+  fi
+}
+
+# ------------------------------
+# ⚙️ 启用 BBR（智能检测版）
+# ------------------------------
 enable_bbr() {
   echo "⚙️ 检查并启用 BBR 拥塞控制..."
   if sysctl net.ipv4.tcp_congestion_control 2>/dev/null | grep -q bbr; then
-    echo "✅ BBR 已启用"
+    echo "✅ 已启用 BBR"
   else
-    echo "🚀 正在启用 BBR..."
-    sudo modprobe tcp_bbr 2>/dev/null || true
-    echo "tcp_bbr" | sudo tee -a /etc/modules-load.d/modules.conf >/dev/null 2>&1 || true
-    sudo sysctl -w net.core.default_qdisc=fq >/dev/null 2>&1
-    sudo sysctl -w net.ipv4.tcp_congestion_control=bbr >/dev/null 2>&1
-    echo "✅ BBR 启用完成"
+    if modprobe tcp_bbr 2>/dev/null; then
+      echo "tcp_bbr" >> /etc/modules-load.d/modules.conf 2>/dev/null || true
+      sysctl -w net.core.default_qdisc=fq >/dev/null 2>&1 || true
+      sysctl -w net.ipv4.tcp_congestion_control=bbr >/dev/null 2>&1 || true
+      echo "✅ 成功启用 BBR"
+    else
+      echo "⚠️ 当前系统内核不支持 BBR，使用 CUBIC 模式继续运行"
+    fi
   fi
 }
 
-# ===================== 读取端口 =====================
-read_port() {
-  if [[ $# -ge 1 && -n "${1:-}" ]]; then
-    TUIC_PORT="$1"
-    echo "✅ 从命令行参数读取 TUIC 端口: $TUIC_PORT"
-    return
-  fi
-
-  if [[ -n "${SERVER_PORT:-}" ]]; then
-    TUIC_PORT="$SERVER_PORT"
-    echo "✅ 从环境变量读取 TUIC 端口: $TUIC_PORT"
-    return
-  fi
-
-  local DEFAULT_PORT=$((RANDOM % 40000 + 10000))
-  echo "⚙️ 未检测到端口，将使用随机端口: $DEFAULT_PORT"
-  TUIC_PORT="$DEFAULT_PORT"
+# ------------------------------
+# 🌐 下载 TUIC 二进制文件
+# ------------------------------
+install_tuic() {
+  echo "⬇️ 安装 TUIC v5 服务端..."
+  LATEST_URL=$(curl -s https://api.github.com/repos/EAimTY/tuic/releases/latest | jq -r '.assets[] | select(.name | test("x86_64-unknown-linux-gnu")) | .browser_download_url')
+  mkdir -p /usr/local/bin
+  wget -qO /usr/local/bin/tuic-server "$LATEST_URL"
+  chmod +x /usr/local/bin/tuic-server
 }
 
-# ===================== 加载已有配置 =====================
-load_existing_config() {
-  if [[ -f "$SERVER_TOML" ]]; then
-    TUIC_PORT=$(grep '^server =' "$SERVER_TOML" | sed -E 's/.*:(.*)\"/\1/')
-    TUIC_UUID=$(grep '^\[users\]' -A1 "$SERVER_TOML" | tail -n1 | awk '{print $1}')
-    TUIC_PASSWORD=$(grep '^\[users\]' -A1 "$SERVER_TOML" | tail -n1 | awk -F'"' '{print $2}')
-    echo "📂 检测到已有配置，加载中..."
-    echo "✅ 端口: $TUIC_PORT"
-    echo "✅ UUID: $TUIC_UUID"
-    echo "✅ 密码: $TUIC_PASSWORD"
-    return 0
-  fi
-  return 1
-}
-
-# ===================== 证书生成 =====================
-generate_cert() {
-  if [[ -f "$CERT_PEM" && -f "$KEY_PEM" ]]; then
-    echo "🔐 检测到已有证书，跳过生成"
-    return
-  fi
-  echo "🔐 生成自签 ECDSA-P256 证书..."
-  openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
-    -keyout "$KEY_PEM" -out "$CERT_PEM" -subj "/CN=${MASQ_DOMAIN}" -days 365 -nodes >/dev/null 2>&1
-  chmod 600 "$KEY_PEM"
-  chmod 644 "$CERT_PEM"
-  echo "✅ 自签证书生成完成"
-}
-
-# ===================== 检查并下载 tuic-server =====================
-check_tuic_server() {
-  if [[ -x "$TUIC_BIN" ]]; then
-    echo "✅ 已找到 tuic-server"
-    return
-  fi
-  echo "📥 未找到 tuic-server，正在下载..."
-  ARCH=$(uname -m)
-  if [[ "$ARCH" != "x86_64" ]]; then
-    echo "❌ 暂不支持架构: $ARCH"
-    exit 1
-  fi
-  TUIC_URL="https://github.com/Itsusinn/tuic/releases/download/v1.3.5/tuic-server-x86_64-linux"
-  if curl -L -f -o "$TUIC_BIN" "$TUIC_URL"; then
-    chmod +x "$TUIC_BIN"
-    echo "✅ tuic-server 下载完成"
-  else
-    echo "❌ 下载失败，请手动下载 $TUIC_URL"
-    exit 1
-  fi
-}
-
-# ===================== 生成配置文件 =====================
+# ------------------------------
+# ⚙️ 生成 TUIC 配置文件
+# ------------------------------
 generate_config() {
-  echo "⚙️ 正在生成 TUIC v5 配置文件（含抗 QoS 优化参数）..."
-cat > "$SERVER_TOML" <<EOF
-log_level = "off"
-server = "0.0.0.0:${TUIC_PORT}"
+  mkdir -p /etc/tuic
+  TUIC_PORT=${TUIC_PORT:-$((RANDOM % 55535 + 10000))}
+  UUID=$(cat /proc/sys/kernel/random/uuid)
+  PASSWORD=$(openssl rand -base64 12)
+  MASQ_DOMAIN=${MASQ_DOMAIN:-"www.bing.com"}
 
-udp_relay_ipv6 = false
-zero_rtt_handshake = true
-dual_stack = false
-auth_timeout = "10s"
-task_negotiation_timeout = "5s"
-gc_interval = "10s"
-gc_lifetime = "10s"
-max_external_packet_size = 8192
-
-[users]
-${TUIC_UUID} = "${TUIC_PASSWORD}"
-
-[tls]
-self_sign = false
-certificate = "$CERT_PEM"
-private_key = "$KEY_PEM"
-alpn = ["h3"]
-disable_sni = false
-server_name = "${MASQ_DOMAIN}"
-
-[restful]
-addr = "127.0.0.1:${TUIC_PORT}"
-secret = "$(openssl rand -hex 16)"
-maximum_clients_per_user = 999999999
-
-[quic]
-initial_mtu = 1500
-min_mtu = 1200
-gso = true
-pmtu = true
-send_window = 33554432
-receive_window = 16777216
-max_idle_time = "600s"
-heartbeat_interval = "15s"
-
-[quic.congestion_control]
-controller = "bbr"
-initial_window = 4194304
+  echo "⚙️ 正在生成 TUIC v5 配置文件..."
+  cat > /etc/tuic/tuic.json <<EOF
+{
+  "server": "[::]:${TUIC_PORT}",
+  "users": {
+    "${UUID}": "${PASSWORD}"
+  },
+  "certificate": "/etc/ssl/certs/ssl-cert-snakeoil.pem",
+  "private_key": "/etc/ssl/private/ssl-cert-snakeoil.key",
+  "congestion_control": "bbr",
+  "alpn": ["h3"],
+  "auth_timeout": "3s",
+  "zero_rtt_handshake": true,
+  "heartbeat_interval": "15s",
+  "max_idle_time": "600s",
+  "disable_sni": false,
+  "server_name": "${MASQ_DOMAIN}",
+  "log_level": "warn",
+  "log_file": "/etc/tuic/tuic.log"
+}
 EOF
+
+  echo "✅ TUIC 配置生成完成"
 }
 
-# ===================== 获取公网 IP =====================
-get_server_ip() {
-  ip=$(curl -s --connect-timeout 3 https://api.ipify.org || true)
-  echo "${ip:-YOUR_SERVER_IP}"
-}
+# ------------------------------
+# 🔄 生成 Systemd 服务
+# ------------------------------
+generate_service() {
+  cat > /etc/systemd/system/tuic.service <<EOF
+[Unit]
+Description=TUIC v5 Server
+After=network.target
 
-# ===================== 生成 TUIC 链接 =====================
-generate_link() {
-  local ip="$1"
-  cat > "$LINK_TXT" <<EOF
-tuic://${TUIC_UUID}:${TUIC_PASSWORD}@${ip}:${TUIC_PORT}?congestion_control=bbr&alpn=h3&allowInsecure=1&sni=${MASQ_DOMAIN}&udp_relay_mode=native&disable_sni=0&reduce_rtt=1&max_udp_relay_packet_size=8192#TUIC-${ip}
+[Service]
+ExecStart=/usr/local/bin/tuic-server -c /etc/tuic/tuic.json
+Restart=always
+LimitNOFILE=51200
+
+[Install]
+WantedBy=multi-user.target
 EOF
-  echo ""
-  echo "📱 TUIC 链接已生成并保存到 $LINK_TXT"
-  echo "🔗 链接内容："
-  cat "$LINK_TXT"
-  echo ""
+  systemctl daemon-reexec
+  systemctl daemon-reload
+  systemctl enable --now tuic.service
 }
 
-# ===================== 后台循环守护 =====================
-run_background_loop() {
-  echo "✅ TUIC 服务启动中..."
-  while true; do
-    "$TUIC_BIN" -c "$SERVER_TOML"
-    echo "⚠️ tuic-server 已退出，5 秒后自动重启..."
-    sleep 5
-  done
+# ------------------------------
+# 📜 输出连接信息
+# ------------------------------
+show_info() {
+  echo
+  echo "🎉 TUIC v5 部署完成！以下是连接信息："
+  echo "--------------------------------------------"
+  echo "协议: tuic"
+  echo "地址: $(curl -s ifconfig.me)"
+  echo "端口: ${TUIC_PORT}"
+  echo "UUID: ${UUID}"
+  echo "密码: ${PASSWORD}"
+  echo "SNI: ${MASQ_DOMAIN}"
+  echo "ALPN: h3"
+  echo "0-RTT: 已启用"
+  echo "UDP: 原生中继"
+  echo "--------------------------------------------"
+  echo "示例客户端 URL："
+  echo "tuic://${UUID}:${PASSWORD}@$(curl -s ifconfig.me):${TUIC_PORT}?congestion_control=bbr&udp_relay_mode=native&alpn=h3&allow_insecure=1&disable_sni=0&zero_rtt_handshake=1#TUICv5"
+  echo "--------------------------------------------"
+  echo "📄 配置文件路径: /etc/tuic/tuic.json"
+  echo "日志文件路径: /etc/tuic/tuic.log"
+  echo
 }
 
-# ===================== 主逻辑 =====================
+# ------------------------------
+# 🚀 主执行流程
+# ------------------------------
 main() {
+  check_root
+  install_deps
   enable_bbr
-
-  if ! load_existing_config; then
-    echo "⚙️ 第一次运行，开始初始化..."
-    read_port "$@"
-    TUIC_UUID="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null)"
-    TUIC_PASSWORD="$(openssl rand -hex 16)"
-    echo "🔑 UUID: $TUIC_UUID"
-    echo "🔑 密码: $TUIC_PASSWORD"
-    echo "🎯 SNI: ${MASQ_DOMAIN}"
-    generate_cert
-    check_tuic_server
-    generate_config
-  else
-    generate_cert
-    check_tuic_server
-  fi
-
-  ip="$(get_server_ip)"
-  generate_link "$ip"
-  run_background_loop
+  install_tuic
+  generate_config
+  generate_service
+  show_info
 }
 
-main "$@"
+main
