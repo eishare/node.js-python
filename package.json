@@ -1,0 +1,25 @@
+{
+  "name": "tuic-deployer-node",
+  "version": "1.0.0",
+  "description": "TUIC v5 over QUIC 自动部署脚本（Node.js 版，无需 root）",
+  "main": "deploy.js",
+  "type": "module",
+  "scripts": {
+    "start": "node deploy.js"
+  },
+  "keywords": [
+    "tuic",
+    "quic",
+    "vpn",
+    "deploy",
+    "nodejs",
+    "no-root"
+  ],
+  "author": "Your Name",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {}
+}
+
