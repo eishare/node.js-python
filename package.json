@@ -1,11 +1,11 @@
 {
-  "name": "tuic-deployer-node",
+  "name": "tuic-node",
   "version": "1.0.0",
   "description": "TUIC v5 over QUIC 自动部署脚本（Node.js 版，无需 root）",
-  "main": "deploy.js",
+  "main": "node.js",
   "type": "module",
   "scripts": {
-    "start": "node deploy.js"
+    "start": "node node.js"
   },
   "keywords": [
     "tuic",
@@ -15,7 +15,7 @@
     "nodejs",
     "no-root"
   ],
-  "author": "Your Name",
+  "author": "eishare",
   "license": "MIT",
   "engines": {
     "node": ">=18"
