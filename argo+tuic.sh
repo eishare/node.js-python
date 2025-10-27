@@ -1,195 +1,222 @@
-#!/bin/bash
-# ============================================================
-# 一键部署 Argo(VLESS+WS+TLS) + TUIC 节点 (兼容非root)
-# 适配: Alpine / Debian / Ubuntu / CentOS
-# 作者: eishare (2025)
-# ============================================================
+#!/usr/bin/env node
+/**
+ * =========================================
+ * TUIC v5 over QUIC 自动部署脚本（Node.js 版，无需 root）
+ * 特性：
+ *  - 支持自定义端口参数或环境变量 SERVER_PORT
+ *  - 使用确认为 v1.3.5 x86_64-linux 二进制下载链接（硬编码）
+ *  - 随机伪装域名
+ *  - 自动生成证书
+ *  - 自动下载 tuic-server
+ *  - 自动生成配置文件与 TUIC 链接
+ *  - 自动守护运行
+ * =========================================
+ */
 
-set -e
-MASQ_DOMAIN="www.bing.com"
-LOG_FILE="deploy.log"
+import { execSync, spawn } from "child_process";
+import fs from "fs";
+import https from "https";
+import crypto from "crypto";
 
-exec > >(tee -a "$LOG_FILE") 2>&1
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 
-echo "🚀 Argo + TUIC 一键部署启动..."
-echo "📜 日志保存到: $LOG_FILE"
+// ================== 基本配置 ==================
+const MASQ_DOMAINS = [
+  "www.bing.com",
+];
 
-# ============================================================
-# 检查并安装依赖（兼容非root）
-# ============================================================
-install_base() {
-  echo "📦 检查系统环境..."
-  if command -v apt >/dev/null 2>&1; then
-    PKG="apt"
-  elif command -v yum >/dev/null 2>&1; then
-    PKG="yum"
-  elif command -v apk >/dev/null 2>&1; then
-    PKG="apk"
-  else
-    echo "❌ 未检测到受支持的包管理器，请手动安装 curl unzip openssl"
-    return
-  fi
+const SERVER_TOML = "server.toml";
+const CERT_PEM = "tuic-cert.pem";
+const KEY_PEM = "tuic-key.pem";
+const LINK_TXT = "tuic_link.txt";
+const TUIC_BIN = "./tuic-server";
 
-  for cmd in curl unzip openssl; do
-    if ! command -v "$cmd" >/dev/null 2>&1; then
-      echo "📥 安装依赖: $cmd"
-      case $PKG in
-        apt)  sudo apt update -y && sudo apt install -y "$cmd" ;;
-        yum)  sudo yum install -y "$cmd" ;;
-        apk)  sudo apk add --no-cache "$cmd" ;;
-      esac
-    fi
-  done
+// ================== 工具函数 ==================
+const randomPort = () => Math.floor(Math.random() * 40000) + 20000;
+const randomSNI = () =>
+  MASQ_DOMAINS[Math.floor(Math.random() * MASQ_DOMAINS.length)];
+const randomHex = (len = 16) => crypto.randomBytes(len).toString("hex");
+const uuid = () => crypto.randomUUID();
+
+function fileExists(p) {
+  return fs.existsSync(p);
 }
 
-install_base
+function execSafe(cmd) {
+  try {
+    return execSync(cmd, { encoding: "utf8", stdio: "pipe" }).trim();
+  } catch {
+    return "";
+  }
+}
 
-# ============================================================
-# TUIC 配置
-# ============================================================
-TUIC_PORT="${1:-}"
-TUIC_DIR="./tuic"
-mkdir -p "$TUIC_DIR"
-cd "$TUIC_DIR"
+// ================== 下载文件（支持重定向） ==================
+async function downloadFile(url, dest, redirectCount = 0) {
+  return new Promise((resolve, reject) => {
+    if (redirectCount > 5) return reject(new Error("重定向次数过多"));
+    const file = fs.createWriteStream(dest);
+    https
+      .get(url, (res) => {
+        if ([301, 302, 303, 307, 308].includes(res.statusCode)) {
+          const newUrl = res.headers.location;
+          console.log(`↪️ 跳转到新地址: ${newUrl}`);
+          file.close();
+          try { fs.unlinkSync(dest); } catch(e){}
+          return resolve(downloadFile(newUrl, dest, redirectCount + 1));
+        }
 
-if [[ -z "$TUIC_PORT" ]]; then
-  read -rp "请输入 TUIC 端口 (1024-65535): " TUIC_PORT
-fi
+        if (res.statusCode !== 200)
+          return reject(new Error(`下载失败: ${res.statusCode}`));
 
-if ! [[ "$TUIC_PORT" =~ ^[0-9]+$ ]]; then
-  echo "❌ 无效端口"
-  exit 1
-fi
+        res.pipe(file);
+        file.on("finish", () => file.close(resolve));
+      })
+      .on("error", reject);
+  });
+}
 
-echo "✅ TUIC 端口: $TUIC_PORT"
+// ================== 读取端口 ==================
+function readPort() {
+  const argPort = process.argv[2];
+  if (argPort && !isNaN(argPort)) {
+    console.log(`✅ 使用命令行端口: ${argPort}`);
+    return Number(argPort);
+  }
 
-# -------------------- 下载 tuic-server --------------------
-TUIC_BIN="./tuic-server"
-if [[ ! -x "$TUIC_BIN" ]]; then
-  echo "📥 下载 tuic-server..."
-  curl -L -o "$TUIC_BIN" https://github.com/Itsusinn/tuic/releases/download/v1.3.5/tuic-server-x86_64-linux
-  chmod +x "$TUIC_BIN"
-fi
+  if (process.env.SERVER_PORT && !isNaN(process.env.SERVER_PORT)) {
+    console.log(`✅ 使用环境变量端口: ${process.env.SERVER_PORT}`);
+    return Number(process.env.SERVER_PORT);
+  }
 
-# -------------------- 生成证书 --------------------
-CERT_PEM="tuic-cert.pem"
-KEY_PEM="tuic-key.pem"
-if [[ ! -f "$CERT_PEM" ]]; then
-  echo "🔐 生成自签证书..."
-  openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
-    -keyout "$KEY_PEM" -out "$CERT_PEM" -subj "/CN=${MASQ_DOMAIN}" -days 365 -nodes >/dev/null 2>&1
-fi
+  const port = randomPort();
+  console.log(`🎲 自动分配随机端口: ${port}`);
+  return port;
+}
 
-# -------------------- TUIC 配置文件 --------------------
-TUIC_UUID=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen)
-TUIC_PASS=$(openssl rand -hex 8)
+// ================== 生成证书 ==================
+function generateCert(domain) {
+  if (fileExists(CERT_PEM) && fileExists(KEY_PEM)) {
+    console.log("🔐 证书存在，跳过生成");
+    return;
+  }
+  console.log(`🔐 生成伪装证书 (${domain})...`);
+  execSafe(
+    `openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+    -keyout ${KEY_PEM} -out ${CERT_PEM} -subj "/CN=${domain}" -days 365 -nodes`
+  );
+  fs.chmodSync(KEY_PEM, 0o600);
+  fs.chmodSync(CERT_PEM, 0o644);
+}
 
-cat > server.toml <<EOF
-log_level = "off"
-server = "0.0.0.0:${TUIC_PORT}"
+// ================== 检查或下载 tuic-server ==================
+async function checkTuicServer() {
+  if (fileExists(TUIC_BIN)) {
+    console.log("✅ tuic-server 已存在");
+    return;
+  }
+  console.log("📥 下载 tuic-server v1.3.5 (x86_64‐linux)...");
+  const url = "https://github.com/Itsusinn/tuic/releases/download/v1.3.5/tuic-server-x86_64-linux";
+  await downloadFile(url, TUIC_BIN);
+  fs.chmodSync(TUIC_BIN, 0o755);
+  console.log("✅ tuic-server 下载完成");
+}
+
+// ================== 生成配置文件 ==================
+function generateConfig(uuid, password, port, domain) {
+  const secret = randomHex(16);
+  const mtu = 1200 + Math.floor(Math.random() * 200);
+  const toml = `
+log_level = "warn"
+server = "0.0.0.0:${port}"
+
+udp_relay_ipv6 = false
+zero_rtt_handshake = true
+dual_stack = false
+auth_timeout = "8s"
+task_negotiation_timeout = "4s"
+gc_interval = "8s"
+gc_lifetime = "8s"
+max_external_packet_size = 8192
 
 [users]
-${TUIC_UUID} = "${TUIC_PASS}"
+${uuid} = "${password}"
 
 [tls]
 certificate = "${CERT_PEM}"
 private_key = "${KEY_PEM}"
 alpn = ["h3"]
-EOF
 
-TUIC_IP=$(curl -s https://api.ipify.org || echo "your_server_ip")
+[restful]
+addr = "127.0.0.1:${port}"
+secret = "${secret}"
+maximum_clients_per_user = 999999999
 
-cat > tuic_link.txt <<EOF
-tuic://${TUIC_UUID}:${TUIC_PASS}@${TUIC_IP}:${TUIC_PORT}?congestion_control=bbr&alpn=h3&allowInsecure=1&sni=${MASQ_DOMAIN}#TUIC-${TUIC_IP}
-EOF
+[quic]
+initial_mtu = ${mtu}
+min_mtu = 1200
+gso = true
+pmtu = true
+send_window = 33554432
+receive_window = 16777216
+max_idle_time = "25s"
 
-echo "✅ TUIC 配置完成"
-echo "🔗 TUIC 链接: $(cat tuic_link.txt)"
-cd ..
-
-# ============================================================
-# Argo + VLESS 配置
-# ============================================================
-XRAY_DIR="./xray"
-mkdir -p "$XRAY_DIR"
-cd "$XRAY_DIR"
-
-# -------------------- 下载 Xray --------------------
-XRAY_BIN="./xray"
-if [[ ! -x "$XRAY_BIN" ]]; then
-  echo "📥 下载 Xray 核心..."
-  curl -L -o xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
-  unzip -o xray.zip >/dev/null 2>&1
-  chmod +x "$XRAY_BIN"
-  rm -f xray.zip
-fi
-
-# -------------------- VLESS 配置 --------------------
-UUID=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen)
-
-cat > config.json <<EOF
-{
-  "inbounds": [
-    {
-      "port": 443,
-      "protocol": "vless",
-      "settings": { "clients": [{ "id": "${UUID}" }], "decryption": "none" },
-      "streamSettings": {
-        "network": "ws",
-        "security": "tls",
-        "tlsSettings": { "serverName": "${MASQ_DOMAIN}", "allowInsecure": true },
-        "wsSettings": { "path": "/argo" }
-      }
-    }
-  ],
-  "outbounds": [{ "protocol": "freedom" }]
+[quic.congestion_control]
+controller = "bbr"
+initial_window = 6291456
+`;
+  fs.writeFileSync(SERVER_TOML, toml.trim() + "\n");
+  console.log("⚙️ 配置文件已生成:", SERVER_TOML);
 }
-EOF
 
-# -------------------- 下载 Argo --------------------
-ARGO_BIN="./cloudflared"
-if [[ ! -x "$ARGO_BIN" ]]; then
-  echo "📥 下载 Cloudflare Argo Tunnel..."
-  curl -L -o "$ARGO_BIN" https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
-  chmod +x "$ARGO_BIN"
-fi
+// ================== 获取公网IP ==================
+async function getPublicIP() {
+  return new Promise((resolve) => {
+    https
+      .get("https://api64.ipify.org", (res) => {
+        let data = "";
+        res.on("data", (chunk) => (data += chunk));
+        res.on("end", () => resolve(data.trim() || "127.0.0.1"));
+      })
+      .on("error", () => resolve("127.0.0.1"));
+  });
+}
 
-# -------------------- 启动 Argo 临时隧道 --------------------
-echo "🌐 启动临时 Argo 隧道..."
-$ARGO_BIN tunnel --url localhost:443 > argo.log 2>&1 &
-sleep 8
+// ================== 生成 TUIC 链接 ==================
+function generateLink(uuid, password, ip, port, domain) {
+  const link = `tuic://${uuid}:${password}@${ip}:${port}?congestion_control=bbr&alpn=h3&allowInsecure=1&sni=${domain}&udp_relay_mode=native&disable_sni=0&reduce_rtt=1&max_udp_relay_packet_size=8192#TUIC-${ip}`;
+  fs.writeFileSync(LINK_TXT, link);
+  console.log("🔗 TUIC 链接已生成:");
+  console.log(link);
+}
 
-TUNNEL_URL=$(grep -Eo 'https://[-0-9a-zA-Z]+\.trycloudflare\.com' argo.log | head -n 1)
+// ================== 守护运行 ==================
+function runLoop() {
+  console.log("🚀 启动 TUIC 服务...");
+  const loop = () => {
+    const proc = spawn(TUIC_BIN, ["-c", SERVER_TOML], { stdio: "ignore" });
+    proc.on("exit", (code) => {
+      console.log(`⚠️ TUIC 异常退出 (${code})，5 秒后重启...`);
+      setTimeout(loop, 5000);
+    });
+  };
+  loop();
+}
 
-if [[ -z "$TUNNEL_URL" ]]; then
-  echo "❌ 未能获取 Argo 隧道地址，请稍后查看 argo.log"
-else
-  echo "✅ 临时隧道地址: $TUNNEL_URL"
-fi
+// ================== 主流程 ==================
+async function main() {
+  console.log("🌐 TUIC v5 over QUIC 自动部署开始");
 
-cat > vless_link.txt <<EOF
-vless://${UUID}@${TUNNEL_URL#https://}:443?encryption=none&security=tls&type=ws&host=${MASQ_DOMAIN}&path=/argo#Argo-${MASQ_DOMAIN}
-EOF
+  const port = readPort();
+  const domain = randomSNI();
+  const id = uuid();
+  const password = randomHex(16);
 
-echo "✅ Argo + VLESS 已配置完成"
-echo "🔗 VLESS 链接: $(cat vless_link.txt)"
-cd ..
+  generateCert(domain);
+  await checkTuicServer();
+  generateConfig(id, password, port, domain);
+  const ip = await getPublicIP();
+  generateLink(id, password, ip, port, domain);
+  runLoop();
+}
 
-# ============================================================
-# 启动后台服务
-# ============================================================
-echo "🚀 启动 TUIC 与 Xray 服务..."
-
-nohup ./tuic/tuic-server -c ./tuic/server.toml >/dev/null 2>&1 &
-nohup ./xray/xray -c ./xray/config.json >/dev/null 2>&1 &
-nohup ./xray/cloudflared tunnel --url localhost:443 >/dev/null 2>&1 &
-
-echo ""
-echo "✅ 所有服务已启动"
-echo "📄 TUIC 配置: $(pwd)/tuic/server.toml"
-echo "📄 VLESS 配置: $(pwd)/xray/config.json"
-echo "🪄 TUIC 链接: $(pwd)/tuic/tuic_link.txt"
-echo "🪄 VLESS 链接: $(pwd)/xray/vless_link.txt"
-echo "📜 日志文件: $LOG_FILE"
-echo ""
-echo "🎉 部署完成！"
+main().catch((err) => console.error("❌ 发生错误：", err));
