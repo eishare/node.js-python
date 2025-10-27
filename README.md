@@ -17,7 +17,12 @@ curl -Ls https://raw.githubusercontent.com/eishare/tuic-hy2-node.js-python/main/
 
 * 更新自适应端口，无需再手动设置
 
-* TUIC版本：1.3.5
+* TUIC版本：1.4.5 官方更新说明（原文直译）：
+
+  🐛 错误修复
+     （服务器）发送 FIN 以作废stream reset by peer
+  ⚙️ 杂项任务
+      将日志更改为跟踪
 
 ```
 curl -Ls https://raw.githubusercontent.com/eishare/tuic-hy2-node.js-python/main/tuic.sh | sed 's/\r$//' | bash
@@ -26,5 +31,5 @@ curl -Ls https://raw.githubusercontent.com/eishare/tuic-hy2-node.js-python/main/
 # 3.TUIC在Nodejs/Python文件复制部署
 
 * 自适应端口，无需手动编辑文件，复制node.js+package.json文件即可
-* TUIC版本：1.3.5
+* TUIC版本：1.4.5
 * hy2由于较高QoS阻断率，暂停更新
