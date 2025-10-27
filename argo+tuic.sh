@@ -1,7 +1,7 @@
 #!/bin/bash
 # =========================================
 # TUIC v5 over QUIC 自动部署脚本（纯 Shell 版，无需 root）
-# 修复 Pterodactyl 下端口识别、TUIC 链接中文问题及 $1 unbound variable
+# 修复 Pterodactyl 下端口识别、TUIC 链接中文问题、$1 unbound variable 以及 xxd 缺失
 # =========================================
 set -euo pipefail
 IFS=$'\n\t'
@@ -17,7 +17,10 @@ TUIC_BIN="./tuic-server"
 # -------------------- 工具函数 --------------------
 random_port() { echo $(( (RANDOM % 40000) + 20000 )); }
 random_sni() { echo "${MASQ_DOMAINS[$RANDOM % ${#MASQ_DOMAINS[@]}]}"; }
-random_hex() { head -c "${1:-16}" /dev/urandom | xxd -p -c 256; }
+
+# 修复 xxd 缺失，使用 od 生成随机 hex
+random_hex() { head -c "${1:-16}" /dev/urandom | od -An -tx1 | tr -d ' \n'; }
+
 uuid() { command -v uuidgen >/dev/null 2>&1 && uuidgen || cat /proc/sys/kernel/random/uuid; }
 file_exists() { [[ -f "$1" ]]; }
 
@@ -149,7 +152,7 @@ run_loop() {
 main() {
   echo "🌐 TUIC v5 over QUIC 自动部署开始" >&2
 
-  # ✅ 彻底解决 $1 unbound variable，直接从 SERVER_PORT 或随机端口
+  # ✅ 完全不依赖 $1，直接从 SERVER_PORT 或随机端口
   TUIC_PORT=$(read_port "${SERVER_PORT:-}")
   DOMAIN=$(random_sni)
   UUID=$(uuid)
