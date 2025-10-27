@@ -74,7 +74,7 @@ check_tuic_server() {
     return
   fi
   echo "📥 下载 tuic-server..."
-  curl -L -o "$TUIC_BIN" "https://github.com/Itsusinn/tuic/releases/download/v1.5.3/tuic-server-x86_64-linux"
+  curl -L -o "$TUIC_BIN" "https://github.com/Itsusinn/tuic/releases/download/v1.3.5/tuic-server-x86_64-linux"
   chmod +x "$TUIC_BIN"
 }
 
@@ -165,4 +165,5 @@ main() {
 }
 
 main "$@"
+
 
