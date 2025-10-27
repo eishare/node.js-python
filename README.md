@@ -21,7 +21,8 @@ curl -Ls https://raw.githubusercontent.com/eishare/tuic-hy2-node.js-python/main/
 
   🐛 错误修复
      （服务器）发送 FIN 以作废stream reset by peer
-  ⚙️ 杂项任务
+
+   ⚙️ 杂项任务
       将日志更改为跟踪
 
 ```
