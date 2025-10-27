@@ -1,67 +1,62 @@
 #!/bin/bash
 # =========================================
-# TUIC v5 over QUIC 自动部署脚本（支持托管容器）
-# 特性：自动检测真实端口、抗 QoS 优化、随机握手、自动恢复
+# TUIC v5 一键部署（Pterodactyl 自适应端口版）
 # =========================================
 set -euo pipefail
 IFS=$'\n\t'
 
-MASQ_DOMAIN="www.bing.com"
+MASQ_DOMAIN="www.cloudflare.com"
 SERVER_TOML="server.toml"
 CERT_PEM="tuic-cert.pem"
 KEY_PEM="tuic-key.pem"
 LINK_TXT="tuic_link.txt"
 TUIC_BIN="./tuic-server"
 
-# ===================== 随机端口 & SNI =====================
-random_port() {
-  echo $(( (RANDOM % 40000) + 20000 ))
-}
+# 随机函数
+random_port() { echo $(( (RANDOM % 40000) + 20000 )); }
 random_sni() {
-  local list=( "www.bing.com" "www.cloudflare.com" "www.microsoft.com" "www.google.com" "cdn.jsdelivr.net" )
+  local list=( "www.cloudflare.com" "www.bing.com" "cdn.jsdelivr.net" "www.google.com" "www.microsoft.com" )
   echo "${list[$RANDOM % ${#list[@]}]}"
 }
 
-# ===================== 检测真实可用端口 =====================
+# ✅ 自动检测可用端口（Pterodactyl 兼容）
 detect_real_port() {
-  # 优先使用面板或平台提供的端口
+  # 1️⃣ 优先取环境变量
   if [[ -n "${SERVER_PORT:-}" ]]; then
     echo "🔧 检测到 SERVER_PORT 环境变量: $SERVER_PORT"
     echo "$SERVER_PORT"
-    return 0
+    return
   fi
   if [[ -n "${PORT:-}" ]]; then
     echo "🔧 检测到 PORT 环境变量: $PORT"
     echo "$PORT"
-    return 0
+    return
   fi
 
-  # 若无环境变量，则自动检测本地空闲端口
-  echo "🔍 未检测到面板端口变量，尝试扫描本地可用端口..."
-  while true; do
-    local port=$(random_port)
-    if ! ss -tuln | grep -q ":$port "; then
-      echo "✅ 检测到本地空闲端口: $port"
-      echo "$port"
-      return 0
+  # 2️⃣ 检查面板常见路径
+  if [[ -f "/home/container/ports.txt" ]]; then
+    PORTTXT=$(head -n1 /home/container/ports.txt | grep -oE '[0-9]+')
+    if [[ -n "$PORTTXT" ]]; then
+      echo "🔧 从 /home/container/ports.txt 检测到端口: $PORTTXT"
+      echo "$PORTTXT"
+      return
     fi
-  done
-}
-
-# ===================== 加载已有配置 =====================
-load_existing_config() {
-  if [[ -f "$SERVER_TOML" ]]; then
-    TUIC_PORT=$(grep '^server =' "$SERVER_TOML" | sed -E 's/.*:(.*)\"/\1/')
-    TUIC_UUID=$(grep '^\[users\]' -A1 "$SERVER_TOML" | tail -n1 | awk '{print $1}')
-    TUIC_PASSWORD=$(grep '^\[users\]' -A1 "$SERVER_TOML" | tail -n1 | awk -F'"' '{print $2}')
-    MASQ_DOMAIN=$(grep 'certificate' -A1 "$SERVER_TOML" | grep CN || echo "$MASQ_DOMAIN")
-    echo "📂 已检测到配置文件，加载中..."
-    return 0
   fi
-  return 1
+
+  # 3️⃣ 扫描容器已开放端口
+  PORTSCAN=$(ss -tuln | awk '/LISTEN/ && !/127.0.0.1/ {print $5}' | grep -oE '[0-9]+$' | head -n1 || true)
+  if [[ -n "$PORTSCAN" ]]; then
+    echo "🔧 自动检测到开放端口: $PORTSCAN"
+    echo "$PORTSCAN"
+    return
+  fi
+
+  # 4️⃣ 最后兜底随机
+  echo "⚠️ 未检测到开放端口，使用随机端口"
+  random_port
 }
 
-# ===================== 证书生成 =====================
+# 生成证书
 generate_cert() {
   if [[ -f "$CERT_PEM" && -f "$KEY_PEM" ]]; then
     echo "🔐 证书存在，跳过"
@@ -71,11 +66,9 @@ generate_cert() {
   echo "🔐 生成伪装证书 (${MASQ_DOMAIN})..."
   openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
     -keyout "$KEY_PEM" -out "$CERT_PEM" -subj "/CN=${MASQ_DOMAIN}" -days 365 -nodes >/dev/null 2>&1
-  chmod 600 "$KEY_PEM"
-  chmod 644 "$CERT_PEM"
 }
 
-# ===================== 下载 tuic-server =====================
+# 下载 tuic-server
 check_tuic_server() {
   if [[ -x "$TUIC_BIN" ]]; then
     echo "✅ tuic-server 已存在"
@@ -86,21 +79,13 @@ check_tuic_server() {
   chmod +x "$TUIC_BIN"
 }
 
-# ===================== 生成配置 =====================
+# 生成配置
 generate_config() {
-  local REST_PORT=$((TUIC_PORT + 100))
 cat > "$SERVER_TOML" <<EOF
 log_level = "warn"
 server = "0.0.0.0:${TUIC_PORT}"
-
 udp_relay_ipv6 = false
 zero_rtt_handshake = true
-dual_stack = false
-auth_timeout = "8s"
-task_negotiation_timeout = "4s"
-gc_interval = "8s"
-gc_lifetime = "8s"
-max_external_packet_size = 8192
 
 [users]
 ${TUIC_UUID} = "${TUIC_PASSWORD}"
@@ -110,41 +95,30 @@ certificate = "$CERT_PEM"
 private_key = "$KEY_PEM"
 alpn = ["h3"]
 
-[restful]
-addr = "127.0.0.1:${REST_PORT}"
-secret = "$(openssl rand -hex 16)"
-maximum_clients_per_user = 999999999
-
 [quic]
-initial_mtu = $((1200 + RANDOM % 200))
-min_mtu = 1200
-gso = true
-pmtu = true
 send_window = 33554432
 receive_window = 16777216
 max_idle_time = "25s"
-
 [quic.congestion_control]
 controller = "bbr"
-initial_window = 6291456
 EOF
 }
 
-# ===================== 获取公网IP =====================
+# 获取公网IP
 get_server_ip() {
   curl -s --connect-timeout 3 https://api64.ipify.org || echo "127.0.0.1"
 }
 
-# ===================== 生成TUIC链接 =====================
+# 生成 TUIC 链接
 generate_link() {
   local ip="$1"
   cat > "$LINK_TXT" <<EOF
-tuic://${TUIC_UUID}:${TUIC_PASSWORD}@${ip}:${TUIC_PORT}?congestion_control=bbr&alpn=h3&allowInsecure=1&sni=${MASQ_DOMAIN}&udp_relay_mode=native&disable_sni=0&reduce_rtt=1&max_udp_relay_packet_size=8192#TUIC-${ip}
+tuic://${TUIC_UUID}:${TUIC_PASSWORD}@${ip}:${TUIC_PORT}?congestion_control=bbr&alpn=h3&allowInsecure=1&sni=${MASQ_DOMAIN}&udp_relay_mode=native&disable_sni=0&reduce_rtt=1#TUIC-${ip}
 EOF
   echo "🔗 TUIC 链接已生成: $(cat "$LINK_TXT")"
 }
 
-# ===================== 循环守护 =====================
+# 守护进程
 run_background_loop() {
   echo "🚀 启动 TUIC 服务 (端口: ${TUIC_PORT})..."
   while true; do
@@ -154,20 +128,16 @@ run_background_loop() {
   done
 }
 
-# ===================== 主流程 =====================
+# 主流程
 main() {
-  if ! load_existing_config; then
-    TUIC_PORT=$(detect_real_port)
-    echo "✅ 使用端口: $TUIC_PORT"
-    TUIC_UUID="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen)"
-    TUIC_PASSWORD="$(openssl rand -hex 16)"
-    generate_cert
-    check_tuic_server
-    generate_config
-  else
-    generate_cert
-    check_tuic_server
-  fi
+  TUIC_PORT=$(detect_real_port)
+  echo "✅ 最终使用端口: ${TUIC_PORT}"
+
+  TUIC_UUID="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen)"
+  TUIC_PASSWORD="$(openssl rand -hex 16)"
+  generate_cert
+  check_tuic_server
+  generate_config
 
   ip="$(get_server_ip)"
   generate_link "$ip"
