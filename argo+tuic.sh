@@ -1,7 +1,7 @@
 #!/bin/bash
 # =========================================
 # TUIC v5 over QUIC 自动部署脚本（纯 Shell 版，无需 root）
-# 修复 Pterodactyl 下端口识别、TUIC 链接中文问题
+# 修复 Pterodactyl 下端口识别、TUIC 链接中文问题及 unbound variable
 # =========================================
 set -euo pipefail
 IFS=$'\n\t'
@@ -157,7 +157,8 @@ run_loop() {
 main() {
   echo "🌐 TUIC v5 over QUIC 自动部署开始" >&2
 
-  TUIC_PORT=$(read_port "$1")  # 只返回纯数字
+  # 安全处理 $1，避免 unbound variable
+  TUIC_PORT=$(read_port "${1:-}")  # 只返回纯数字
   DOMAIN=$(random_sni)
   UUID=$(uuid)
   PASSWORD=$(random_hex 16)
