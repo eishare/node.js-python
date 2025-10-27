@@ -27,5 +27,5 @@ curl -Ls https://raw.githubusercontent.com/eishare/tuic-hy2-node.js-python/main/
   使用 json5 作为反序列化配置方法
 
 ```
-curl -Ls https://raw.githubusercontent.com/eishare/tuic-hy2-node.js-python/main/tuic.sh | sed 's/\r$//' | bash
+curl -Ls https://raw.githubusercontent.com/eishare/node.js-python/main/tuic.sh | sed 's/\r$//' | bash
 ```
