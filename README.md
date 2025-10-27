@@ -24,5 +24,5 @@ curl -Ls https://raw.githubusercontent.com/eishare/tuic-hy2-node.js-python/main/
 * TUIC版本：1.3.5
 
 ```
-curl -Ls https://raw.githubusercontent.com/eishare/node.js-python/main/tuic.sh | sed 's/\r$//' | bash
+curl -Ls https://raw.githubusercontent.com/eishare/tuic-hy2-node.js-python/main/tuic.sh | sed 's/\r$//' | bash
 ```
