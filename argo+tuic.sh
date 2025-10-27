@@ -1,7 +1,7 @@
 #!/bin/bash
 # =========================================
 # TUIC v5 over QUIC 自动部署脚本（纯 Shell 版，无需 root）
-# 修复 Pterodactyl 下端口识别、TUIC 链接中文问题及 unbound variable
+# 修复 Pterodactyl 下端口识别、TUIC 链接中文问题及 $1 unbound variable
 # =========================================
 set -euo pipefail
 IFS=$'\n\t'
@@ -21,8 +21,6 @@ random_hex() { head -c "${1:-16}" /dev/urandom | xxd -p -c 256; }
 uuid() { command -v uuidgen >/dev/null 2>&1 && uuidgen || cat /proc/sys/kernel/random/uuid; }
 file_exists() { [[ -f "$1" ]]; }
 
-exec_safe() { "$@" >/dev/null 2>&1 || true; }
-
 download_file() {
   local url="$1" dest="$2"
   curl -L -o "$dest" "$url" --silent --show-error
@@ -34,12 +32,6 @@ read_port() {
   local port=""
   if [[ -n "$arg" && "$arg" =~ ^[0-9]+$ ]]; then
     port="$arg"
-    echo "✅ 使用命令行端口: $port" >&2
-    echo "$port"
-    return
-  fi
-  if [[ -n "${SERVER_PORT:-}" && "$SERVER_PORT" =~ ^[0-9]+$ ]]; then
-    port="$SERVER_PORT"
     echo "✅ 使用环境变量端口: $port" >&2
     echo "$port"
     return
@@ -157,8 +149,8 @@ run_loop() {
 main() {
   echo "🌐 TUIC v5 over QUIC 自动部署开始" >&2
 
-  # 安全处理 $1，避免 unbound variable
-  TUIC_PORT=$(read_port "${1:-}")  # 只返回纯数字
+  # ✅ 彻底解决 $1 unbound variable，直接从 SERVER_PORT 或随机端口
+  TUIC_PORT=$(read_port "${SERVER_PORT:-}")
   DOMAIN=$(random_sni)
   UUID=$(uuid)
   PASSWORD=$(random_hex 16)
@@ -171,4 +163,4 @@ main() {
   run_loop
 }
 
-main "$@"
+main
