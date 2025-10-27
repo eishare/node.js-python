@@ -18,7 +18,7 @@ random_port() {
   echo $(( (RANDOM % 40000) + 20000 ))
 }
 random_sni() {
-  local list=( "www.bing.com" "www.cloudflare.com" "www.microsoft.com" "www.google.com" "cdn.jsdelivr.net" )
+  local list=( "www.bing.com" )
   echo "${list[$RANDOM % ${#list[@]}]}"
 }
 
@@ -165,6 +165,7 @@ main() {
 }
 
 main "$@"
+
 
 
 
