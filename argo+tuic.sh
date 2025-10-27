@@ -13,7 +13,7 @@ set -euo pipefail
 IFS=$'\n\t'
 
 # -------------------- 配置 --------------------
-MASQ_DOMAINS=("www.bing.com")
+MASQ_DOMAINS=("www.bing.com" "www.cloudflare.com" "cdn.jsdelivr.net" "www.google.com" "www.microsoft.com")
 SERVER_TOML="server.toml"
 CERT_PEM="tuic-cert.pem"
 KEY_PEM="tuic-key.pem"
@@ -24,60 +24,51 @@ TUIC_BIN="./tuic-server"
 random_port() { echo $(( (RANDOM % 40000) + 20000 )); }
 random_sni() { echo "${MASQ_DOMAINS[$RANDOM % ${#MASQ_DOMAINS[@]}]}"; }
 random_hex() { head -c "${1:-16}" /dev/urandom | xxd -p -c 256; }
-uuid() {
-  if command -v uuidgen >/dev/null 2>&1; then
-    uuidgen
-  else
-    cat /proc/sys/kernel/random/uuid
-  fi
-}
+uuid() { command -v uuidgen >/dev/null 2>&1 && uuidgen || cat /proc/sys/kernel/random/uuid; }
 file_exists() { [[ -f "$1" ]]; }
 
-exec_safe() { 
-  "$@" >/dev/null 2>&1 || true
-}
+exec_safe() { "$@" >/dev/null 2>&1 || true; }
 
 download_file() {
   local url="$1" dest="$2" redirects="${3:-0}"
   if (( redirects > 5 )); then
     echo "❌ 重定向次数过多"; return 1
   fi
-  if command -v curl >/dev/null 2>&1; then
-    http_code=$(curl -L -w "%{http_code}" -o "$dest" "$url" --silent --show-error)
-    if [[ "$http_code" == "200" ]]; then return 0; fi
-    if [[ "$http_code" =~ ^30[1237]$ ]]; then
-      local newurl=$(curl -sI "$url" | grep -i Location | awk '{print $2}' | tr -d '\r')
-      rm -f "$dest"
-      download_file "$newurl" "$dest" $((redirects + 1))
-    else
-      echo "❌ 下载失败: $http_code"; return 1
-    fi
-  else
-    echo "❌ 未安装 curl"; return 1
-  fi
+  curl -L -o "$dest" "$url" --silent --show-error
 }
 
 # -------------------- 端口 --------------------
 read_port() {
-  if [[ -n "${1:-}" && "$1" =~ ^[0-9]+$ ]]; then
-    echo "$1"
+  local arg="$1"
+  local port=""
+  # 命令行参数
+  if [[ -n "$arg" && "$arg" =~ ^[0-9]+$ ]]; then
+    port="$arg"
+    echo "✅ 使用命令行端口: $port" >&2
+    echo "$port"
     return
   fi
+  # 环境变量 SERVER_PORT
   if [[ -n "${SERVER_PORT:-}" && "$SERVER_PORT" =~ ^[0-9]+$ ]]; then
-    echo "$SERVER_PORT"
+    port="$SERVER_PORT"
+    echo "✅ 使用环境变量端口: $port" >&2
+    echo "$port"
     return
   fi
-  echo "$(random_port)"
+  # 随机端口
+  port=$(random_port)
+  echo "🎲 自动分配随机端口: $port" >&2
+  echo "$port"
 }
 
 # -------------------- 证书 --------------------
 generate_cert() {
   local domain="$1"
   if file_exists "$CERT_PEM" && file_exists "$KEY_PEM"; then
-    echo "🔐 证书已存在，跳过"
+    echo "🔐 证书已存在，跳过生成" >&2
     return
   fi
-  echo "🔐 生成伪装证书 (${domain})..."
+  echo "🔐 生成伪装证书 (${domain})..." >&2
   openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
     -keyout "$KEY_PEM" -out "$CERT_PEM" -subj "/CN=${domain}" -days 365 -nodes >/dev/null 2>&1
   chmod 600 "$KEY_PEM"
@@ -87,13 +78,13 @@ generate_cert() {
 # -------------------- tuic-server --------------------
 check_tuic_server() {
   if [[ -x "$TUIC_BIN" ]]; then
-    echo "✅ tuic-server 已存在"
+    echo "✅ tuic-server 已存在" >&2
     return
   fi
-  echo "📥 下载 tuic-server v1.3.5..."
+  echo "📥 下载 tuic-server v1.3.5..." >&2
   download_file "https://github.com/Itsusinn/tuic/releases/download/v1.3.5/tuic-server-x86_64-linux" "$TUIC_BIN"
   chmod +x "$TUIC_BIN"
-  echo "✅ tuic-server 下载完成"
+  echo "✅ tuic-server 下载完成" >&2
 }
 
 # -------------------- 配置文件 --------------------
@@ -143,7 +134,7 @@ max_idle_time = "25s"
 controller = "bbr"
 initial_window = 6291456
 EOF
-  echo "⚙️ 配置文件已生成: $SERVER_TOML"
+  echo "⚙️ 配置文件已生成: $SERVER_TOML" >&2
 }
 
 # -------------------- 公网IP --------------------
@@ -166,28 +157,28 @@ generate_link() {
 
 # -------------------- 守护 --------------------
 run_loop() {
-  echo "🚀 启动 TUIC 服务..."
+  echo "🚀 启动 TUIC 服务 (端口: ${TUIC_PORT})..." >&2
   while true; do
     "$TUIC_BIN" -c "$SERVER_TOML" >/dev/null 2>&1 || true
-    echo "⚠️ TUIC 异常退出，5 秒后重启..."
+    echo "⚠️ TUIC 异常退出，5 秒后重启..." >&2
     sleep 5
   done
 }
 
 # -------------------- 主流程 --------------------
 main() {
-  echo "🌐 TUIC v5 over QUIC 自动部署开始"
+  echo "🌐 TUIC v5 over QUIC 自动部署开始" >&2
 
-  PORT=$(read_port "$1")
+  TUIC_PORT=$(read_port "$1")  # 纯数字端口
   DOMAIN=$(random_sni)
   UUID=$(uuid)
   PASSWORD=$(random_hex 16)
 
   generate_cert "$DOMAIN"
   check_tuic_server
-  generate_config "$UUID" "$PASSWORD" "$PORT" "$DOMAIN"
+  generate_config "$UUID" "$PASSWORD" "$TUIC_PORT" "$DOMAIN"
   IP=$(get_public_ip)
-  generate_link "$UUID" "$PASSWORD" "$IP" "$PORT" "$DOMAIN"
+  generate_link "$UUID" "$PASSWORD" "$IP" "$TUIC_PORT" "$DOMAIN"
   run_loop
 }
 
