@@ -1,7 +1,7 @@
 #!/bin/bash
 # =========================================
-# TUIC v5 over QUIC 增强版自动部署脚本（免 root）
-# 特性：抗 QoS 优化、随机握手、自动恢复、IPv4/IPv6 自适应
+# TUIC v5 over QUIC 自动部署脚本（支持托管容器）
+# 特性：自动检测真实端口、抗 QoS 优化、随机握手、自动恢复
 # =========================================
 set -euo pipefail
 IFS=$'\n\t'
@@ -22,11 +22,26 @@ random_sni() {
   echo "${list[$RANDOM % ${#list[@]}]}"
 }
 
-# ===================== 自动检测开放端口 =====================
-detect_open_port() {
+# ===================== 检测真实可用端口 =====================
+detect_real_port() {
+  # 优先使用面板或平台提供的端口
+  if [[ -n "${SERVER_PORT:-}" ]]; then
+    echo "🔧 检测到 SERVER_PORT 环境变量: $SERVER_PORT"
+    echo "$SERVER_PORT"
+    return 0
+  fi
+  if [[ -n "${PORT:-}" ]]; then
+    echo "🔧 检测到 PORT 环境变量: $PORT"
+    echo "$PORT"
+    return 0
+  fi
+
+  # 若无环境变量，则自动检测本地空闲端口
+  echo "🔍 未检测到面板端口变量，尝试扫描本地可用端口..."
   while true; do
     local port=$(random_port)
     if ! ss -tuln | grep -q ":$port "; then
+      echo "✅ 检测到本地空闲端口: $port"
       echo "$port"
       return 0
     fi
@@ -73,7 +88,7 @@ check_tuic_server() {
 
 # ===================== 生成配置 =====================
 generate_config() {
-  REST_PORT=$((TUIC_PORT + 100))
+  local REST_PORT=$((TUIC_PORT + 100))
 cat > "$SERVER_TOML" <<EOF
 log_level = "warn"
 server = "0.0.0.0:${TUIC_PORT}"
@@ -131,7 +146,7 @@ EOF
 
 # ===================== 循环守护 =====================
 run_background_loop() {
-  echo "🚀 启动 TUIC 服务..."
+  echo "🚀 启动 TUIC 服务 (端口: ${TUIC_PORT})..."
   while true; do
     "$TUIC_BIN" -c "$SERVER_TOML" >/dev/null 2>&1 || true
     echo "⚠️ TUIC 异常退出，5秒后重启..."
@@ -142,9 +157,8 @@ run_background_loop() {
 # ===================== 主流程 =====================
 main() {
   if ! load_existing_config; then
-    echo "🔍 正在检测可用端口..."
-    TUIC_PORT=$(detect_open_port)
-    echo "✅ 检测到空闲端口: $TUIC_PORT"
+    TUIC_PORT=$(detect_real_port)
+    echo "✅ 使用端口: $TUIC_PORT"
     TUIC_UUID="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen)"
     TUIC_PASSWORD="$(openssl rand -hex 16)"
     generate_cert
