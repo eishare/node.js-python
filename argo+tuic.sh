@@ -1,13 +1,7 @@
 #!/bin/bash
 # =========================================
 # TUIC v5 over QUIC 自动部署脚本（纯 Shell 版，无需 root）
-# 特性：
-#  - 支持自定义端口参数或环境变量 SERVER_PORT
-#  - 下载固定版本 v1.3.5 x86_64-linux tuic-server
-#  - 随机伪装域名
-#  - 自动生成证书
-#  - 自动生成配置文件和 TUIC 链接
-#  - 守护运行
+# 修复 Pterodactyl 下端口识别、TUIC 链接中文问题
 # =========================================
 set -euo pipefail
 IFS=$'\n\t'
@@ -30,10 +24,7 @@ file_exists() { [[ -f "$1" ]]; }
 exec_safe() { "$@" >/dev/null 2>&1 || true; }
 
 download_file() {
-  local url="$1" dest="$2" redirects="${3:-0}"
-  if (( redirects > 5 )); then
-    echo "❌ 重定向次数过多"; return 1
-  fi
+  local url="$1" dest="$2"
   curl -L -o "$dest" "$url" --silent --show-error
 }
 
@@ -41,21 +32,18 @@ download_file() {
 read_port() {
   local arg="$1"
   local port=""
-  # 命令行参数
   if [[ -n "$arg" && "$arg" =~ ^[0-9]+$ ]]; then
     port="$arg"
     echo "✅ 使用命令行端口: $port" >&2
     echo "$port"
     return
   fi
-  # 环境变量 SERVER_PORT
   if [[ -n "${SERVER_PORT:-}" && "$SERVER_PORT" =~ ^[0-9]+$ ]]; then
     port="$SERVER_PORT"
     echo "✅ 使用环境变量端口: $port" >&2
     echo "$port"
     return
   fi
-  # 随机端口
   port=$(random_port)
   echo "🎲 自动分配随机端口: $port" >&2
   echo "$port"
@@ -152,7 +140,7 @@ generate_link() {
   local link="tuic://${uuid}:${password}@${ip}:${port}?congestion_control=bbr&alpn=h3&allowInsecure=1&sni=${domain}&udp_relay_mode=native&disable_sni=0&reduce_rtt=1&max_udp_relay_packet_size=8192#TUIC-${ip}"
   echo "$link" > "$LINK_TXT"
   echo "🔗 TUIC 链接已生成:"
-  echo "$link"
+  cat "$LINK_TXT"
 }
 
 # -------------------- 守护 --------------------
@@ -169,7 +157,7 @@ run_loop() {
 main() {
   echo "🌐 TUIC v5 over QUIC 自动部署开始" >&2
 
-  TUIC_PORT=$(read_port "$1")  # 纯数字端口
+  TUIC_PORT=$(read_port "$1")  # 只返回纯数字
   DOMAIN=$(random_sni)
   UUID=$(uuid)
   PASSWORD=$(random_hex 16)
