@@ -24,11 +24,9 @@ random_sni() {
 
 # ===================== 自动检测开放端口 =====================
 detect_open_port() {
-  echo "🔍 正在检测可用端口..."
   while true; do
     local port=$(random_port)
     if ! ss -tuln | grep -q ":$port "; then
-      echo "✅ 检测到空闲端口: $port"
       echo "$port"
       return 0
     fi
@@ -75,6 +73,7 @@ check_tuic_server() {
 
 # ===================== 生成配置 =====================
 generate_config() {
+  REST_PORT=$((TUIC_PORT + 100))
 cat > "$SERVER_TOML" <<EOF
 log_level = "warn"
 server = "0.0.0.0:${TUIC_PORT}"
@@ -97,7 +96,7 @@ private_key = "$KEY_PEM"
 alpn = ["h3"]
 
 [restful]
-addr = "127.0.0.1:${TUIC_PORT}"
+addr = "127.0.0.1:${REST_PORT}"
 secret = "$(openssl rand -hex 16)"
 maximum_clients_per_user = 999999999
 
@@ -143,7 +142,9 @@ run_background_loop() {
 # ===================== 主流程 =====================
 main() {
   if ! load_existing_config; then
+    echo "🔍 正在检测可用端口..."
     TUIC_PORT=$(detect_open_port)
+    echo "✅ 检测到空闲端口: $TUIC_PORT"
     TUIC_UUID="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen)"
     TUIC_PASSWORD="$(openssl rand -hex 16)"
     generate_cert
