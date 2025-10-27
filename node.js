@@ -4,7 +4,7 @@
  * TUIC v5 over QUIC 自动部署脚本（Node.js 版，无需 root）
  * 特性：
  *  - 支持自定义端口参数或环境变量 SERVER_PORT
- *  - 使用确认为 v1.3.5 x86_64-linux 二进制下载链接（硬编码）
+ *  - 使用确认为 v1.4.5 x86_64-linux 二进制下载链接（硬编码）
  *  - 随机伪装域名
  *  - 自动生成证书
  *  - 自动下载 tuic-server
@@ -114,8 +114,8 @@ async function checkTuicServer() {
     console.log("✅ tuic-server 已存在");
     return;
   }
-  console.log("📥 下载 tuic-server v1.3.5 (x86_64‐linux)...");
-  const url = "https://github.com/Itsusinn/tuic/releases/download/v1.3.5/tuic-server-x86_64-linux";
+  console.log("📥 下载 tuic-server v1.4.5 (x86_64‐linux)...");
+  const url = "https://github.com/Itsusinn/tuic/releases/download/v1.4.5/tuic-server-x86_64-linux";
   await downloadFile(url, TUIC_BIN);
   fs.chmodSync(TUIC_BIN, 0o755);
   console.log("✅ tuic-server 下载完成");
@@ -220,3 +220,4 @@ async function main() {
 }
 
 main().catch((err) => console.error("❌ 发生错误：", err));
+
