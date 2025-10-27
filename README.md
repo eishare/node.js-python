@@ -21,10 +21,7 @@ curl -Ls https://raw.githubusercontent.com/eishare/tuic-hy2-node.js-python/main/
 
 * 更新自适应端口，无需再手动设置
 
-* TUIC版本：1.5.3 官方更新说明（原文直译）：
-  
-  更积极的max_concurrent_streams策略
-  使用 json5 作为反序列化配置方法
+* TUIC版本：1.3.5
 
 ```
 curl -Ls https://raw.githubusercontent.com/eishare/node.js-python/main/tuic.sh | sed 's/\r$//' | bash
