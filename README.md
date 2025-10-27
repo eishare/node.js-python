@@ -24,5 +24,7 @@ curl -Ls https://raw.githubusercontent.com/eishare/tuic-hy2-node.js-python/main/
 ```
 
 # 3.TUIC在Nodejs/Python文件复制部署
-* 自适应端口，复制node.js+package.json文件即可
-* hy2暂不更新
+
+* 自适应端口，无需手动编辑文件，复制node.js+package.json文件即可
+* TUIC版本：1.3.5
+* hy2由于较高QoS阻断率，暂停更新
