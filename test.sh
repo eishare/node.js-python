@@ -2,7 +2,7 @@
 # =========================================
 # TUIC v1.4.5 + VLESS+TCP+Reality 自动部署脚本（免 root）
 # TUIC SNI: www.bing.com
-# VLESS Reality: fallback to /, shortId, serverNames
+# VLESS Reality: fallback to /, shortId, serverNames, 固定监听 443 端口
 # =========================================
 set -euo pipefail
 export LC_ALL=C
@@ -20,31 +20,28 @@ VLESS_BIN="./xray"
 VLESS_CONFIG="vless-config.json"
 VLESS_LINK_TXT="vless_link.txt"
 
-# ========== 随机端口 ==========
+# VLESS 固定端口 443（服务器自身通信端口）
+VLESS_PORT=443
+
+# ========== 随机端口（仅 TUIC）==========
 random_port() {
   echo $(( (RANDOM % 40000) + 20000 ))
 }
 
-# ========== 选择端口 ==========
-read_port() {
-  local name="$1"
-  local env_var="$2"
-  local default_port
-  shift 2
-
+# ========== 选择 TUIC 端口 ==========
+read_tuic_port() {
   if [[ $# -ge 1 && -n "${1:-}" ]]; then
-    eval "$name=\"$1\""
-    echo "✅ Using specified $name: $1"
+    TUIC_PORT="$1"
+    echo "✅ Using specified TUIC_PORT: $TUIC_PORT"
     return
   fi
-  if [[ -n "${!env_var:-}" ]]; then
-    eval "$name=\"${!env_var}\""
-    echo "✅ Using environment $name: ${!env_var}"
+  if [[ -n "${SERVER_PORT:-}" ]]; then
+    TUIC_PORT="$SERVER_PORT"
+    echo "✅ Using environment TUIC_PORT: $SERVER_PORT"
     return
   fi
-  default_port=$(random_port)
-  eval "$name=\"$default_port\""
-  echo "🎲 Random $name selected: $default_port"
+  TUIC_PORT=$(random_port)
+  echo "🎲 Random TUIC_PORT selected: $TUIC_PORT"
 }
 
 # ========== 检查已有配置 ==========
@@ -62,7 +59,6 @@ load_existing_config() {
 
   # VLESS
   if [[ -f "$VLESS_CONFIG" ]]; then
-    VLESS_PORT=$(jq -r '.inbounds[0].port' "$VLESS_CONFIG")
     VLESS_UUID=$(jq -r '.inbounds[0].settings.clients[0].id' "$VLESS_CONFIG")
     echo "📂 Existing VLESS config loaded."
     loaded=1
@@ -102,8 +98,14 @@ check_vless_server() {
     return
   fi
   echo "📥 Downloading latest Xray Linux 64-bit..."
-  local latest_url=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest | grep "browser_download_url.*Xray-linux-64.zip" | cut -d'"' -f4)
-  curl -L -o xray.zip "$latest_url"
+  local api_url="https://api.github.com/repos/XTLS/Xray-core/releases/latest"
+  local latest_tag=$(curl -s "$api_url" | grep '"tag_name"' | cut -d'"' -f4)
+  if [[ -z "$latest_tag" ]]; then
+    echo "❌ Failed to get latest Xray version. Falling back to v1.8.20."
+    latest_tag="v1.8.20"
+  fi
+  local download_url="https://github.com/XTLS/Xray-core/releases/download/${latest_tag}/Xray-linux-64.zip"
+  curl -L -o xray.zip "$download_url"
   unzip -j xray.zip xray -d .
   rm xray.zip
   chmod +x "$VLESS_BIN"
@@ -149,8 +151,9 @@ EOF
 # ========== 生成 VLESS Reality 配置 ==========
 generate_vless_config() {
   local shortId=$(openssl rand -hex 8)
-  local privateKey=$( "$VLESS_BIN" x25519 | grep "Private key" | awk '{print $3}' )
-  local publicKey=$( "$VLESS_BIN" x25519 | grep "Public key" | awk '{print $3}' )
+  local keypair=$("$VLESS_BIN" x25519)
+  local privateKey=$(echo "$keypair" | grep "Private key" | awk '{print $3}')
+  local publicKey=$(echo "$keypair" | grep "Public key" | awk '{print $3}')
 
 cat > "$VLESS_CONFIG" <<EOF
 {
@@ -208,11 +211,12 @@ cat > "$VLESS_CONFIG" <<EOF
 }
 EOF
 
-  # 保存 Reality 信息（便于查看）
+  # 保存 Reality 信息
   cat > reality_info.txt <<EOF
 Reality Public Key: $publicKey
 Reality Short ID: $shortId
 VLESS UUID: $VLESS_UUID
+VLESS Port: $VLESS_PORT (固定服务器443端口)
 EOF
 }
 
@@ -255,7 +259,7 @@ run_tuic_background() {
 
 # ========== 守护进程：VLESS ==========
 run_vless_background() {
-  echo "🚀 Starting VLESS Reality server on :${VLESS_PORT}..."
+  echo "🚀 Starting VLESS Reality server on :${VLESS_PORT} (服务器443端口)..."
   while true; do
     "$VLESS_BIN" run -c "$VLESS_CONFIG" >/dev/null 2>&1 || true
     echo "⚠️ VLESS crashed. Restarting in 5s..."
@@ -267,12 +271,12 @@ run_vless_background() {
 main() {
   echo "========================================="
   echo "   TUIC + VLESS Reality 一键部署脚本"
+  echo "   VLESS 固定使用 443 端口"
   echo "========================================="
 
   if ! load_existing_config; then
-    # 首次运行：生成所有配置
-    read_port TUIC_PORT SERVER_PORT "$@"
-    read_port VLESS_PORT VLESS_SERVER_PORT "${@:2}"
+    # 首次运行
+    read_tuic_port "$@"
 
     TUIC_UUID="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen)"
     TUIC_PASSWORD="$(openssl rand -hex 16)"
@@ -284,10 +288,11 @@ main() {
     generate_tuic_config
     generate_vless_config
   else
-    # 已有配置：只补全缺失部分
+    # 已有配置
     generate_cert
     check_tuic_server
     check_vless_server
+    [[ ! -f "$SERVER_TOML" ]] && generate_tuic_config
     [[ ! -f "$VLESS_CONFIG" ]] && generate_vless_config
   fi
 
@@ -296,9 +301,9 @@ main() {
   generate_vless_link "$ip"
 
   echo ""
-  echo "🚀 启动服务（TUIC + VLESS）..."
+  echo "🚀 启动服务（TUIC on :${TUIC_PORT} + VLESS on :443）..."
 
-  # 启动两个服务（后台并行）
+  # 并行启动
   run_tuic_background &
   run_vless_background &
   wait
