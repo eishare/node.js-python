@@ -18,6 +18,7 @@ TUIC_BIN="./tuic-server"
 VLESS_DIR="$HOME/vless"
 VLESS_BIN="$VLESS_DIR/xray"
 VLESS_CONF="$VLESS_DIR/config.json"
+VLESS_LINK="vless_link.txt"
 VLESS_PORT=443
 
 # ========== 随机端口 ==========
@@ -128,13 +129,22 @@ get_server_ip() {
 }
 
 # ========== 生成 TUIC 链接 ==========
-generate_link() {
+generate_tuic_link() {
   local ip="$1"
   cat > "$LINK_TXT" <<EOF
 tuic://${TUIC_UUID}:${TUIC_PASSWORD}@${ip}:${TUIC_PORT}?congestion_control=bbr&alpn=h3&allowInsecure=1&sni=${MASQ_DOMAIN}&udp_relay_mode=native&disable_sni=0&reduce_rtt=1&max_udp_relay_packet_size=8192#TUIC-${ip}
 EOF
   echo "🔗 TUIC link generated successfully:"
   cat "$LINK_TXT"
+}
+
+# ========== 生成 VLESS 链接 ==========
+generate_vless_link() {
+    local ip="$1"
+    local vless_link="vless://${UUID}@${ip}:${VLESS_PORT}?security=xtls&encryption=none&flow=xtls-rprx-vision&tls=xtls&sni=${MASQ_DOMAIN}#VLESS-${ip}"
+    echo "$vless_link" > "$VLESS_LINK"
+    echo "🔗 VLESS link generated successfully:"
+    cat "$VLESS_LINK"
 }
 
 # ========== VLESS TCP+XTLS 精简部署 ==========
@@ -213,7 +223,9 @@ main() {
   deploy_vless
 
   ip="$(get_server_ip)"
-  generate_link "$ip"
+  generate_vless_link "$ip"  # 生成 VLESS 链接
+  generate_tuic_link "$ip"   # 生成 TUIC 链接
+
   run_background_loop
 }
 
