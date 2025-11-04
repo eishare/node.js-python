@@ -1,7 +1,6 @@
 #!/bin/bash
 set -e
 
-# ===== 基本配置 =====
 DOMAIN=www.bing.com
 UUID=$(cat /proc/sys/kernel/random/uuid)
 XRAY_VER="v1.8.8"
@@ -9,19 +8,24 @@ XRAY_BIN="./xray"
 CERT_DIR="./certs"
 CONF="./xray.json"
 
-# ===== 生成自签证书 =====
 mkdir -p "$CERT_DIR"
+
+# ===== 自签证书 =====
 if [ ! -f "$CERT_DIR/cert.pem" ]; then
   echo "🔐 生成自签名证书 (${DOMAIN})..."
   openssl req -x509 -newkey rsa:1024 -keyout "$CERT_DIR/private.key" -out "$CERT_DIR/cert.pem" \
     -days 365 -nodes -subj "/CN=${DOMAIN}" >/dev/null 2>&1
 fi
 
-# ===== 下载 Xray-core (tar.gz 版本) =====
+# ===== 下载 Xray-core =====
 if [ ! -x "$XRAY_BIN" ]; then
   echo "📥 下载 Xray-core (tar.gz 版)..."
-  curl -L -o xray.tgz "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VER}/Xray-linux-64.tar.gz"
-  tar -xzf xray.tgz xray >/dev/null 2>&1
+  curl -L -o xray.tgz "https://ghproxy.net/https://github.com/XTLS/Xray-core/releases/download/${XRAY_VER}/Xray-linux-64.tar.gz"
+  if [ ! -s xray.tgz ]; then
+    echo "❌ 下载失败，尝试备用源..."
+    curl -L -o xray.tgz "https://mirror.ghproxy.com/https://github.com/XTLS/Xray-core/releases/download/${XRAY_VER}/Xray-linux-64.tar.gz"
+  fi
+  tar -xzf xray.tgz xray >/dev/null 2>&1 || { echo "❌ 解压失败"; exit 1; }
   chmod +x xray
   rm -f xray.tgz
 fi
@@ -54,7 +58,7 @@ cat > "$CONF" <<EOF
 }
 EOF
 
-# ===== 获取 IP 并生成链接 =====
+# ===== 输出节点链接 =====
 SERVER_IP=$(curl -s https://api64.ipify.org || echo "127.0.0.1")
 VLESS_LINK="vless://${UUID}@${SERVER_IP}:443?security=xtls&encryption=none&flow=xtls-rprx-vision&tls=xtls&sni=${DOMAIN}#VLESS-${SERVER_IP}"
 
@@ -63,5 +67,5 @@ echo "🔗 节点链接:"
 echo "$VLESS_LINK"
 echo ""
 
-# ===== 启动服务 =====
+# ===== 启动 =====
 exec "$XRAY_BIN" run -c "$CONF"
