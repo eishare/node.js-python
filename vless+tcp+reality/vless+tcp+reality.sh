@@ -1,52 +1,50 @@
 #!/bin/bash
 # =========================================
-# VLESS + WS + TLS + CDN 专用（晚高峰丝滑）
-# 翼龙面板：固定 443 端口 + 自动证书 + CDN 直连
+# VLESS + WS + TLS（IP 直连 + CDN 兼容）
+# 翼龙面板：自动匹配 SERVER_PORT
+# 客户端链接使用 IP 地址
 # 解决：端口非443、CDN -1
 # =========================================
 set -uo pipefail
 
-# ========== 强制使用 443 端口（CDN 必备）==========
-PORT=443
-echo "Using fixed port for CDN: $PORT"
-
-# ========== 域名（必须自定义，CDN 必填）==========
-DOMAIN="${DOMAIN:-}"  # 必须通过环境变量传入
-if [[ -z "$DOMAIN" ]]; then
-  echo "ERROR: 必须设置 DOMAIN 环境变量！"
-  echo "示例: DOMAIN=vless.yourdomain.com ./deploy.sh"
-  exit 1
+# ========== 自动检测端口（翼龙环境变量优先）==========
+if [[ -n "${SERVER_PORT:-}" ]]; then
+  PORT="$SERVER_PORT"
+  echo "Port (env): $PORT"
+elif [[ $# -ge 1 && -n "$1" ]]; then
+  PORT="$1"
+  echo "Port (arg): $PORT"
+else
+  PORT=443
+  echo "Port (default): $PORT"
 fi
-echo "Domain: $DOMAIN"
+
+# ========== 获取服务器 IP ==========
+IP=$(curl -s https://api64.ipify.org || echo "127.0.0.1")
+echo "Server IP: $IP"
 
 # ========== 文件定义 ==========
 WS_PATH="/$(openssl rand -hex 8)"
 VLESS_BIN="./xray"
 VLESS_CONFIG="vless-ws-tls.json"
 VLESS_LINK="vless_link.txt"
-CERT_PEM="/etc/letsencrypt/live/$DOMAIN/fullchain.pem"
-KEY_PEM="/etc/letsencrypt/live/$DOMAIN/privkey.pem"
 
-# ========== 检查证书（优先 Let's Encrypt）==========
+# 证书路径（支持自定义上传）
+CERT_DIR="${CERT_DIR:-/certs}"
+CERT_PEM="$CERT_DIR/fullchain.pem"
+KEY_PEM="$CERT_DIR/privkey.pem"
+
+# ========== 检查证书 ==========
 check_cert() {
   if [[ -f "$CERT_PEM" && -f "$KEY_PEM" ]]; then
-    echo "Using existing Let's Encrypt cert: $DOMAIN"
+    echo "Using certificate: $CERT_PEM"
     return 0
   else
-    echo "Certificate not found! Please upload Let's Encrypt cert to:"
-    echo "  $CERT_PEM"
-    echo "  $KEY_PEM"
-    echo "Or use self-signed (not recommended for CDN):"
-    gen_self_signed_cert
+    echo "Certificate not found! Generating self-signed..."
+    mkdir -p "$CERT_DIR"
+    openssl req -x509 -newkey rsa:2048 -keyout "$KEY_PEM" -out "$CERT_PEM" \
+      -days 365 -nodes -subj "/CN=$IP" >/dev/null 2>&1
   fi
-}
-
-# ========== 生成自签证书（备用）==========
-gen_self_signed_cert() {
-  echo "Generating self-signed cert for $DOMAIN..."
-  mkdir -p /etc/letsencrypt/live/$DOMAIN
-  openssl req -x509 -newkey rsa:2048 -keyout "$KEY_PEM" -out "$CERT_PEM" \
-    -days 365 -nodes -subj "/CN=$DOMAIN" >/dev/null 2>&1
 }
 
 # ========== 下载 Xray ==========
@@ -83,8 +81,7 @@ gen_config() {
         "alpn": ["http/1.1"]
       },
       "wsSettings": {
-        "path": "$WS_PATH",
-        "headers": {"Host": "$DOMAIN"}
+        "path": "$WS_PATH"
       }
     },
     "sniffing": {"enabled": true, "destOverride": ["http", "tls"]}
@@ -94,42 +91,43 @@ gen_config() {
 EOF
 }
 
-# ========== 生成链接 ==========
+# ========== 生成客户端链接（使用 IP）==========
 gen_link() {
+  local encoded_path=$(printf '%s' "$WS_PATH" | jq -Rr @uri)
   cat > "$VLESS_LINK" <<EOF
-vless://$VLESS_UUID@$DOMAIN:443?encryption=none&security=tls&type=ws&host=$DOMAIN&path=$(printf '%s' "$WS_PATH" | jq -Rr @uri)#VLESS-WS-CDN
+vless://$VLESS_UUID@$IP:$PORT?encryption=none&security=tls&type=ws&host=$IP&path=$encoded_path#VLESS-WS-IP
 EOF
 
   echo "========================================="
-  echo "VLESS + WS + TLS + CDN 节点已就绪！"
-  echo "Domain: $DOMAIN"
-  echo "Port: 443"
+  echo "VLESS + WS + TLS 节点已就绪！"
+  echo "IP: $IP"
+  echo "Port: $PORT"
   echo "WS Path: $WS_PATH"
   echo ""
-  echo "客户端链接："
+  echo "客户端链接（IP 直连）："
   cat "$VLESS_LINK"
   echo ""
-  echo "Cloudflare 设置："
-  echo "1. A 记录: $DOMAIN → $(curl -s https://api64.ipify.org)"
-  echo "2. 代理状态：开启（橙色云）"
-  echo "3. SSL/TLS：Full (strict)"
+  echo "CDN 模式（可选）："
+  echo "1. Cloudflare 添加 A 记录: cdn.example.com → $IP"
+  echo "2. 开启代理（橙色云）"
+  echo "3. 客户端改 host=cdn.example.com"
   echo "========================================="
 }
 
 # ========== 启动 ==========
 run_vless() {
-  echo "Starting VLESS-WS-TLS on :443..."
+  echo "Starting VLESS-WS-TLS on :$PORT..."
   exec "$VLESS_BIN" run -c "$VLESS_CONFIG"
 }
 
 # ========== 主函数 ==========
 main() {
-  # 加载 UUID
+  # 加载或生成 UUID
   if [[ -f "$VLESS_CONFIG" ]]; then
     VLESS_UUID=$(grep -o '"id": "[^"]*' "$VLESS_CONFIG" | head -1 | cut -d'"' -f4)
     echo "Loaded UUID: $VLESS_UUID"
   else
-    VLESS_UUID=$(cat /proc/sys/kernel/random/uuid)
+    VLESS_UUID=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || openssl rand -hex 16)
     echo "Generated UUID: $VLESS_UUID"
   fi
 
