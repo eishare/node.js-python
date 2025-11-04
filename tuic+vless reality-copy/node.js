@@ -2,7 +2,6 @@
 const { spawn, execSync } = require('child_process');
 const fs = require('fs');
 const https = require('https');
-const crypto = require('crypto');
 
 const MASQ_DOMAIN = 'www.bing.com';
 const TUIC_VERSION = 'v1.4.5';
@@ -19,7 +18,9 @@ const XRAY_CONF = './xray.json';
 const VLESS_INFO = './vless_reality_info.txt';
 const XRAY_LOG = './xray.log';
 
-// ========== 工具函数 ==========
+const REALITY_KEYS_FILE = './reality_keys.json';
+
+// ===== 工具函数 =====
 function genUUID() {
   try {
     return execSync('cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen || openssl rand -hex 16').toString().trim();
@@ -40,7 +41,7 @@ function download(url, dest, cb) {
   }).on('error', err => cb(err));
 }
 
-// ========== TUIC 部分 ==========
+// ===== TUIC 部分 =====
 const TUIC_PORT = process.env.SERVER_PORT || randomPort();
 const TUIC_UUID = genUUID();
 const TUIC_PASSWORD = execSync('openssl rand -hex 16').toString().trim();
@@ -105,15 +106,8 @@ function runTuic() {
   console.log('✅ TUIC 已后台启动，日志:', TUIC_LOG);
 }
 
-// ========== VLESS Reality 部分 ==========
+// ===== VLESS Reality 部分 =====
 const VLESS_UUID = genUUID();
-
-// 自动生成符合 Xray Reality 的 Base64 私钥
-function generateRealityKeys() {
-  const PRIVATE_KEY = crypto.randomBytes(32).toString('base64');
-  const PUBLIC_KEY = crypto.randomBytes(32).toString('base64'); // 可以随机生成或使用Xray工具生成
-  return { PRIVATE_KEY, PUBLIC_KEY };
-}
 
 function checkXray() {
   if (!fs.existsSync(XRAY_BIN)) {
@@ -127,7 +121,7 @@ function checkXray() {
   }
 }
 
-function generateVlessConfig(PRIVATE_KEY) {
+function generateVlessConfig(keys) {
   const conf = {
     log: { loglevel: 'warning' },
     inbounds: [{
@@ -143,7 +137,7 @@ function generateVlessConfig(PRIVATE_KEY) {
           dest: `${MASQ_DOMAIN}:443`,
           xver: 0,
           serverNames: [MASQ_DOMAIN],
-          privateKey: PRIVATE_KEY,
+          privateKey: keys.privateKey,
           shortIds: ['']
         }
       }
@@ -153,16 +147,16 @@ function generateVlessConfig(PRIVATE_KEY) {
   fs.writeFileSync(XRAY_CONF, JSON.stringify(conf, null, 2));
 }
 
-function generateVlessLink(PRIVATE_KEY, PUBLIC_KEY) {
+function generateVlessLink(keys) {
   const IP = execSync('curl -s https://api64.ipify.org || echo 127.0.0.1').toString().trim();
   const content = `VLESS Reality 节点信息
 UUID: ${VLESS_UUID}
-PrivateKey: ${PRIVATE_KEY}
-PublicKey: ${PUBLIC_KEY}
+PrivateKey: ${keys.privateKey}
+PublicKey: ${keys.publicKey}
 SNI: ${MASQ_DOMAIN}
 Port: 443
 Link:
-vless://${VLESS_UUID}@${IP}:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${MASQ_DOMAIN}&fp=chrome&pbk=${PUBLIC_KEY}#VLESS-REALITY
+vless://${VLESS_UUID}@${IP}:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${MASQ_DOMAIN}&fp=chrome&pbk=${keys.publicKey}#VLESS-REALITY
 `;
   fs.writeFileSync(VLESS_INFO, content);
   console.log(content);
@@ -177,7 +171,7 @@ function runVless() {
   console.log('✅ VLESS Reality 已后台启动，日志:', XRAY_LOG);
 }
 
-// ========== 主流程 ==========
+// ===== 主流程 =====
 checkXray();
 checkTuic(err => {
   if (err) { console.error(err); return; }
@@ -186,9 +180,13 @@ checkTuic(err => {
   generateTuicConfig();
   generateTuicLink();
 
-  const keys = generateRealityKeys();
-  generateVlessConfig(keys.PRIVATE_KEY);
-  generateVlessLink(keys.PRIVATE_KEY, keys.PUBLIC_KEY);
+  if (!fs.existsSync(REALITY_KEYS_FILE)) {
+    console.error(`❌ reality_keys.json 不存在，请先生成 PrivateKey / PublicKey`);
+    process.exit(1);
+  }
+  const keys = JSON.parse(fs.readFileSync(REALITY_KEYS_FILE, 'utf-8'));
+  generateVlessConfig(keys);
+  generateVlessLink(keys);
 
   runVless();
   runTuic();
