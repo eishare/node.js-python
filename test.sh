@@ -2,7 +2,7 @@
 # =========================================
 # TUIC (面板端口) + VLESS-Reality (80) 一键部署
 # 翼龙面板专用：VLESS 强制回源 80 端口
-# 修复：语法错误、EOF 闭合、端口绑定
+# 已修复：syntax error: unexpected end of file
 # =========================================
 set -euo pipefail
 export LC_ALL=C
@@ -78,7 +78,7 @@ get_xray() {
 
 # ========== 生成 TUIC 配置 ==========
 gen_tuic_config() {
-  cat > "$TUIC_TOML" << 'EOF'
+  cat > "$TUIC_TOML" << EOF
 log_level = "warn"
 server = "0.0.0.0:${TUIC_PORT}"
 udp_relay_ipv6 = false
@@ -111,11 +111,6 @@ max_idle_time = "25s"
 controller = "bbr"
 initial_window = 6291456
 EOF
-
-  # 替换变量
-  sed -i "s|\${TUIC_PORT}|$TUIC_PORT|g" "$TUIC_TOML"
-  sed -i "s|\${TUIC_UUID}|$TUIC_UUID|g" "$TUIC_TOML"
-  sed -i "s|\${TUIC_PASS}|$TUIC_PASS|g" "$TUIC_TOML"
 }
 
 # ========== 生成 VLESS Reality 配置（强制 80 端口）==========
