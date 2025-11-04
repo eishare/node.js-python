@@ -9,6 +9,7 @@ IFS=$'\n\t'
 MASQ_DOMAIN="www.bing.com"
 TUIC_VERSION="v1.4.5"
 XRAY_VERSION="v25.10.15"
+XRAY_ZIP_URL="https://github.com/XTLS/Xray-core/releases/download/v25.10.15/Xray-linux-64.zip"
 
 TUIC_BIN="./tuic-server"
 TUIC_TOML="./server.toml"
@@ -34,11 +35,10 @@ gen_uuid() {
 
 fetch_to() {
   local url="$1"; local out="$2"
-  if curl -L --connect-timeout 10 -m 60 -o "$out" "$url"; then
-    return 0
-  fi
-  echo "⚠️ 下载失败，尝试 GHProxy 镜像..."
-  curl -L --connect-timeout 10 -m 60 -o "$out" "https://ghproxy.com/$url" || return 1
+  curl -L --connect-timeout 10 -m 60 -o "$out" "$url" || {
+    echo "❌ 下载失败，请检查网络或手动下载 $url"
+    exit 1
+  }
 }
 
 ########################
@@ -66,6 +66,7 @@ generate_tuic_cert() {
 
 check_tuic() {
   if [[ ! -x "$TUIC_BIN" ]]; then
+    echo "📥 下载 TUIC..."
     fetch_to "https://github.com/Itsusinn/tuic/releases/download/${TUIC_VERSION}/tuic-server-x86_64-linux" "$TUIC_BIN"
     chmod +x "$TUIC_BIN"
   fi
@@ -111,13 +112,21 @@ run_tuic() {
 ########################
 check_xray() {
   if [[ ! -x "$XRAY_BIN" ]]; then
-    fetch_to "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-linux-64" "$XRAY_BIN"
+    echo "📥 下载 Xray-core ZIP 包并解压..."
+    fetch_to "$XRAY_ZIP_URL" "xray.zip"
+    unzip -o xray.zip -d . >/dev/null 2>&1
+    if [[ ! -f "./Xray-linux-64" ]]; then
+      echo "❌ 解压失败，未找到 Xray-linux-64"
+      exit 1
+    fi
+    mv -f ./Xray-linux-64 "$XRAY_BIN"
     chmod +x "$XRAY_BIN"
+    rm -f xray.zip
   fi
 
   if command -v file >/dev/null 2>&1; then
     if ! file "$XRAY_BIN" | grep -qi ELF; then
-      echo "❌ 下载的 xray 不是 ELF 可执行文件，请检查网络或手动上传 Xray-linux-64"
+      echo "❌ Xray 不是 ELF 可执行文件，请检查上传或下载"
       exit 1
     fi
   fi
@@ -128,7 +137,7 @@ generate_reality_keys() {
   PRIVATE_KEY=$(grep -i "Private key" "$REALITY_KEY_FILE" | awk -F': ' '{print $2}' | tr -d '\r\n')
   PUBLIC_KEY=$(grep -i "Public key" "$REALITY_KEY_FILE" | awk -F': ' '{print $2}' | tr -d '\r\n')
   if [[ -z "$PRIVATE_KEY" || -z "$PUBLIC_KEY" ]]; then
-    echo "❌ Reality 密钥生成失败"
+    echo "❌ Reality 密钥生成失败，请检查 ./xray 是否支持 x25519"
     exit 1
   fi
 }
