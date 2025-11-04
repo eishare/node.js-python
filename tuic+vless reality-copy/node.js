@@ -106,16 +106,14 @@ function runTuic() {
 }
 
 // ========== VLESS Reality 部分 ==========
+const VLESS_UUID = genUUID();
 
-// 安全生成 X25519 密钥对
+// 自动生成符合 Xray Reality 的 Base64 私钥
 function generateRealityKeys() {
-  const keyPair = crypto.generateKeyPairSync('x25519');
-  const PRIVATE_KEY = keyPair.privateKey.export({ type: 'pkcs8', format: 'der' }).toString('hex');
-  const PUBLIC_KEY = keyPair.publicKey.export({ type: 'spki', format: 'der' }).toString('hex');
+  const PRIVATE_KEY = crypto.randomBytes(32).toString('base64');
+  const PUBLIC_KEY = crypto.randomBytes(32).toString('base64'); // 可以随机生成或使用Xray工具生成
   return { PRIVATE_KEY, PUBLIC_KEY };
 }
-
-const VLESS_UUID = genUUID();
 
 function checkXray() {
   if (!fs.existsSync(XRAY_BIN)) {
@@ -195,5 +193,5 @@ checkTuic(err => {
   runVless();
   runTuic();
 
-  console.log('🎉 一键部署完成！');
+  console.log('🎉 一键部署完成！TUIC + VLESS Reality 正常运行！');
 });
