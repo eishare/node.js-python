@@ -1,8 +1,7 @@
 #!/bin/bash
 # =========================================
 # TUIC v1.4.5 + VLESS TCP+Reality 自动部署脚本（Node.js 容器适用）
-# TUIC：自动随机UDP端口
-# VLESS：固定TCP 443 + Reality (Vision Flow)
+# 修正版：修复 Xray 下载/检测 与 Reality 密钥生成错误
 # =========================================
 
 set -euo pipefail
@@ -43,8 +42,8 @@ generate_tuic_cert() {
 check_tuic() {
   if [[ ! -x "$TUIC_BIN" ]]; then
     echo "📥 下载 TUIC..."
-    curl -L -o "$TUIC_BIN" "https://github.com/Itsusinn/tuic/releases/download/v1.4.5/tuic-server-x86_64-linux"
-    chmod +x "$TUIC_BIN"
+    curl -L -s -o "$TUIC_BIN" "https://github.com/Itsusinn/tuic/releases/download/v1.4.5/tuic-server-x86_64-linux"
+    chmod +x "$TUIC_BIN" || true
   fi
 }
 
@@ -111,27 +110,59 @@ run_tuic() {
 ########################
 # ===== VLESS Reality =====
 ########################
-XRAY_VER="v25.10.15"
+# 注意：XRAY_VER 只保留数字部分，下载 URL 中再加 v 前缀
+XRAY_VER="25.10.15"
 XRAY_BIN="./xray"
 XRAY_CONF="./xray.json"
 
 check_xray() {
-  if [[ ! -x "$XRAY_BIN" ]]; then
+  if [[ ! -x "$XRAY_BIN" || ! -s "$XRAY_BIN" ]]; then
     echo "📥 下载 Xray-core v${XRAY_VER}..."
-    curl -L -o "$XRAY_BIN" "https://github.com/XTLS/Xray-core/releases/download/v${XRAY_VER}/Xray-linux-64"
-    chmod +x "$XRAY_BIN"
+    # 使用 -s 静默下载并写入文件
+    curl -L -s -o "$XRAY_BIN" "https://github.com/XTLS/Xray-core/releases/download/v${XRAY_VER}/Xray-linux-64" || true
+    chmod +x "$XRAY_BIN" || true
+  fi
+
+  # 基本校验：确保是 ELF 可执行文件
+  if command -v file >/dev/null 2>&1; then
+    if ! file "$XRAY_BIN" 2>/dev/null | grep -qi 'ELF'; then
+      echo "❌ 下载的 xray 不是可执行二进制，可能为 HTML/error 页面。"
+      echo "---- 前 200 字节（用于诊断） ----"
+      head -c 200 "$XRAY_BIN" || true
+      echo "---------------------------------"
+      echo "请检查网络或 GitHub Releases 是否可访问，或手动上传正确的 xray 二进制到当前目录并重试。"
+      exit 1
+    fi
+  else
+    echo "⚠️ 系统缺少 file 命令，无法校验 xray 二进制，请手动确认 ./xray 是正确的 ELF 可执行文件。"
   fi
 }
 
 generate_vless_reality_config() {
   local server_ip="$1"
 
-  echo "🔑 生成 Reality 密钥对..."
+  echo "🔑 使用 xray 生成 Reality 密钥对..."
+  # 尝试运行 xray x25519，并捕获输出
   local key_output
-  key_output=$($XRAY_BIN x25519)
-  local priv_key=$(echo "$key_output" | grep "Private key" | awk '{print $3}')
-  local pub_key=$(echo "$key_output" | grep "Public key" | awk '{print $3}')
-  local short_id=$(openssl rand -hex 8)
+  key_output=$("$XRAY_BIN" x25519 2>/dev/null || true)
+
+  # 验证输出是否包含 Private key
+  local priv_key
+  local pub_key
+  if echo "$key_output" | grep -q "Private key"; then
+    priv_key=$(echo "$key_output" | grep "Private key" | awk -F': ' '{print $2}' | tr -d '\r\n')
+    pub_key=$(echo "$key_output" | grep "Public key" | awk -F': ' '{print $2}' | tr -d '\r\n')
+  else
+    echo "❌ 无法通过 './xray x25519' 生成密钥。xray 输出如下："
+    echo "---- xray x25519 输出开始 ----"
+    echo "$key_output" || true
+    echo "---- xray x25519 输出结束 ----"
+    echo "请检查 ./xray 是否为正确版本（应支持 x25519 子命令），或手动在宿主机生成密钥并编辑 xray.json。"
+    exit 1
+  fi
+
+  local short_id
+  short_id=$(openssl rand -hex 8)
 
   cat > "$XRAY_CONF" <<EOF
 {
@@ -172,7 +203,7 @@ SNI: ${MASQ_DOMAIN}
 端口: 443
 =============================
 
-v2rayN / Nekoray 节点导入链接：
+v2rayN / Nekoray 节点导入链接示例：
 vless://${VLESS_UUID}@${server_ip}:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${MASQ_DOMAIN}&fp=chrome&pbk=${pub_key}&sid=${short_id}#VLESS-Reality-${server_ip}
 EOF
 
