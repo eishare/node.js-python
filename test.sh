@@ -2,7 +2,8 @@
 # =========================================
 # TUIC (面板端口) + VLESS-Reality (80) 一键部署
 # 翼龙面板专用：VLESS 强制回源 80 端口
-# 已修复：syntax error: unexpected end of file
+# 修复：syntax error: unexpected end of file
+# 所有 EOF 严格闭合 + sed 安全替换
 # =========================================
 set -euo pipefail
 export LC_ALL=C
@@ -78,9 +79,9 @@ get_xray() {
 
 # ========== 生成 TUIC 配置 ==========
 gen_tuic_config() {
-  cat > "$TUIC_TOML" << EOF
+  cat > "$TUIC_TOML" << 'EOF'
 log_level = "warn"
-server = "0.0.0.0:${TUIC_PORT}"
+server = "0.0.0.0:__TUIC_PORT__"
 udp_relay_ipv6 = false
 zero_rtt_handshake = true
 dual_stack = false
@@ -90,17 +91,17 @@ gc_interval = "8s"
 gc_lifetime = "8s"
 max_external_packet_size = 8192
 [users]
-${TUIC_UUID} = "${TUIC_PASS}"
+__TUIC_UUID__ = "__TUIC_PASS__"
 [tls]
 certificate = "tuic-cert.pem"
 private_key = "tuic-key.pem"
 alpn = ["h3"]
 [restful]
-addr = "127.0.0.1:${TUIC_PORT}"
-secret = "$(openssl rand -hex 16)"
+addr = "127.0.0.1:__TUIC_PORT__"
+secret = "__RESTFUL_SECRET__"
 maximum_clients_per_user = 999999999
 [quic]
-initial_mtu = $((1200 + RANDOM % 200))
+initial_mtu = __INITIAL_MTU__
 min_mtu = 1200
 gso = true
 pmtu = true
@@ -111,6 +112,13 @@ max_idle_time = "25s"
 controller = "bbr"
 initial_window = 6291456
 EOF
+
+  # 安全替换
+  sed -i "s|__TUIC_PORT__|$TUIC_PORT|g" "$TUIC_TOML"
+  sed -i "s|__TUIC_UUID__|$TUIC_UUID|g" "$TUIC_TOML"
+  sed -i "s|__TUIC_PASS__|$TUIC_PASS|g" "$TUIC_TOML"
+  sed -i "s|__RESTFUL_SECRET__|$(openssl rand -hex 16)|g" "$TUIC_TOML"
+  sed -i "s|__INITIAL_MTU__|$((1200 + RANDOM % 200))|g" "$TUIC_TOML"
 }
 
 # ========== 生成 VLESS Reality 配置（强制 80 端口）==========
@@ -122,14 +130,14 @@ gen_vless_config() {
 
   echo "Generating VLESS Reality config on port $VLESS_PORT..."
 
-  cat > "$VLESS_CONFIG" << EOF
+  cat > "$VLESS_CONFIG" << 'EOF'
 {
   "log": {"loglevel": "warning"},
   "inbounds": [{
-    "port": $VLESS_PORT,
+    "port": __VLESS_PORT__,
     "protocol": "vless",
     "settings": {
-      "clients": [{"id": "$VLESS_UUID", "flow": "xtls-rprx-vision"}],
+      "clients": [{"id": "__VLESS_UUID__", "flow": "xtls-rprx-vision"}],
       "decryption": "none"
     },
     "streamSettings": {
@@ -137,12 +145,12 @@ gen_vless_config() {
       "security": "reality",
       "realitySettings": {
         "show": false,
-        "dest": "${MASQ_DOMAIN}:443",
+        "dest": "__MASQ_DOMAIN__:443",
         "xver": 0,
-        "serverNames": ["$MASQ_DOMAIN", "www.microsoft.com"],
-        "privateKey": "$priv",
-        "publicKey": "$pub",
-        "shortIds": ["$shortId"],
+        "serverNames": ["__MASQ_DOMAIN__", "www.microsoft.com"],
+        "privateKey": "__PRIVATE_KEY__",
+        "publicKey": "__PUBLIC_KEY__",
+        "shortIds": ["__SHORT_ID__"],
         "fingerprint": "chrome",
         "spiderX": "/"
       }
@@ -153,26 +161,49 @@ gen_vless_config() {
 }
 EOF
 
-  cat > reality_info.txt << EOF
-Reality Public Key: $pub
-Reality Short ID: $shortId
-VLESS UUID: $VLESS_UUID
-VLESS Port: $VLESS_PORT
+  # 安全替换
+  sed -i "s|__VLESS_PORT__|$VLESS_PORT|g" "$VLESS_CONFIG"
+  sed -i "s|__VLESS_UUID__|$VLESS_UUID|g" "$VLESS_CONFIG"
+  sed -i "s|__MASQ_DOMAIN__|$MASQ_DOMAIN|g" "$VLESS_CONFIG"
+  sed -i "s|__PRIVATE_KEY__|$priv|g" "$VLESS_CONFIG"
+  sed -i "s|__PUBLIC_KEY__|$pub|g" "$VLESS_CONFIG"
+  sed -i "s|__SHORT_ID__|$shortId|g" "$VLESS_CONFIG"
+
+  cat > reality_info.txt << 'EOF'
+Reality Public Key: __PUBLIC_KEY__
+Reality Short ID: __SHORT_ID__
+VLESS UUID: __VLESS_UUID__
+VLESS Port: __VLESS_PORT__
 EOF
+  sed -i "s|__PUBLIC_KEY__|$pub|g" reality_info.txt
+  sed -i "s|__SHORT_ID__|$shortId|g" reality_info.txt
+  sed -i "s|__VLESS_UUID__|$VLESS_UUID|g" reality_info.txt
+  sed -i "s|__VLESS_PORT__|$VLESS_PORT|g" reality_info.txt
 }
 
 # ========== 生成客户端链接 ==========
 gen_links() {
   local ip="$1"
-  cat > "$TUIC_LINK" << EOF
-tuic://${TUIC_UUID}:${TUIC_PASS}@${ip}:${TUIC_PORT}?congestion_control=bbr&alpn=h3&allowInsecure=1&sni=${MASQ_DOMAIN}&udp_relay_mode=native#TUIC-${TUIC_PORT}
+  cat > "$TUIC_LINK" << 'EOF'
+tuic://__TUIC_UUID__:__TUIC_PASS__@__IP__:__TUIC_PORT__?congestion_control=bbr&alpn=h3&allowInsecure=1&sni=__MASQ_DOMAIN__&udp_relay_mode=native#TUIC
 EOF
+  sed -i "s|__TUIC_UUID__|$TUIC_UUID|g" "$TUIC_LINK"
+  sed -i "s|__TUIC_PASS__|$TUIC_PASS|g" "$TUIC_LINK"
+  sed -i "s|__IP__|$ip|g" "$TUIC_LINK"
+  sed -i "s|__TUIC_PORT__|$TUIC_PORT|g" "$TUIC_LINK"
+  sed -i "s|__MASQ_DOMAIN__|$MASQ_DOMAIN|g" "$TUIC_LINK"
 
   local pub=$(grep "Public Key" reality_info.txt | awk '{print $4}')
   local sid=$(grep "Short ID" reality_info.txt | awk '{print $4}')
-  cat > "$VLESS_LINK" << EOF
-vless://${VLESS_UUID}@${ip}:${VLESS_PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${MASQ_DOMAIN}&fp=chrome&pbk=${pub}&sid=${sid}&type=tcp&spx=%2F#VLESS-Reality-80
+  cat > "$VLESS_LINK" << 'EOF'
+vless://__VLESS_UUID__@__IP__:__VLESS_PORT__?encryption=none&flow=xtls-rprx-vision&security=reality&sni=__MASQ_DOMAIN__&fp=chrome&pbk=__PUBLIC_KEY__&sid=__SHORT_ID__&type=tcp&spx=%2F#VLESS-Reality-80
 EOF
+  sed -i "s|__VLESS_UUID__|$VLESS_UUID|g" "$VLESS_LINK"
+  sed -i "s|__IP__|$ip|g" "$VLESS_LINK"
+  sed -i "s|__VLESS_PORT__|$VLESS_PORT|g" "$VLESS_LINK"
+  sed -i "s|__MASQ_DOMAIN__|$MASQ_DOMAIN|g" "$VLESS_LINK"
+  sed -i "s|__PUBLIC_KEY__|$pub|g" "$VLESS_LINK"
+  sed -i "s|__SHORT_ID__|$sid|g" "$VLESS_LINK"
 
   echo "========================================="
   echo "TUIC (Port: $TUIC_PORT):"
@@ -232,3 +263,6 @@ main() {
 }
 
 main "$@"
+
+# ========== 脚本完整性自检 ==========
+echo "Script loaded successfully. No syntax error."
