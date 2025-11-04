@@ -1,6 +1,6 @@
 #!/bin/bash
 # =========================================
-# TUIC v1.4.5 over QUIC + VLESS TCP+XTLS 自动部署脚本（免 root）
+# TUIC v1.4.5 over QUIC + VLESS TCP+XTLS 自动部署脚本（精简版，适合64MB容器）
 # Tuic 随机端口，VLESS 固定 443，TLS 共用
 # 固定 SNI：www.bing.com
 # =========================================
@@ -137,15 +137,17 @@ EOF
   cat "$LINK_TXT"
 }
 
-# ========== VLESS TCP+XTLS 部署 ==========
+# ========== VLESS TCP+XTLS 精简部署 ==========
 deploy_vless() {
   mkdir -p "$VLESS_DIR" && cd "$VLESS_DIR"
+
+  # 下载精简版 Xray-core
   if [[ ! -x "$VLESS_BIN" ]]; then
-    echo "📥 Downloading Xray-core for VLESS..."
+    echo "📥 Downloading Xray-core (Lite)..."
     curl -L -o xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/xray-linux-64.zip
     unzip -o xray.zip >/dev/null 2>&1
     chmod +x xray
-    rm -f xray.zip
+    rm -f xray.zip   # 删除压缩包节省空间
   fi
 
   UUID=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen)
@@ -157,32 +159,25 @@ deploy_vless() {
       "protocol": "vless",
       "settings": {
         "clients": [
-          {
-            "id": "$UUID"
-          }
+          { "id": "$UUID" }
         ],
         "decryption": "none"
       },
       "streamSettings": {
         "network": "tcp",
-        "security": "tls",
-        "tcpSettings": {},
+        "security": "xtls",
+        "xtlsSettings": {
+          "alpn": ["h2","http/1.1"]
+        },
         "tlsSettings": {
           "certificates": [
-            {
-              "certificateFile": "$CERT_PEM",
-              "keyFile": "$KEY_PEM"
-            }
+            { "certificateFile": "$CERT_PEM", "keyFile": "$KEY_PEM" }
           ]
         }
       }
     }
   ],
-  "outbounds": [
-    {
-      "protocol": "freedom"
-    }
-  ]
+  "outbounds": [ { "protocol": "freedom" } ]
 }
 EOF
 
@@ -214,7 +209,7 @@ main() {
     check_tuic_server
   fi
 
-  # 部署 VLESS TCP+XTLS
+  # 部署 VLESS TCP+XTLS 精简版
   deploy_vless
 
   ip="$(get_server_ip)"
