@@ -8,8 +8,6 @@ IFS=$'\n\t'
 ########################
 MASQ_DOMAIN="www.bing.com"
 TUIC_VERSION="v1.4.5"
-XRAY_VERSION="v25.10.15"
-XRAY_ZIP_URL="https://github.com/XTLS/Xray-core/releases/download/v25.10.15/Xray-linux-64.zip"
 
 TUIC_BIN="./tuic-server"
 TUIC_TOML="./server.toml"
@@ -17,7 +15,7 @@ TUIC_CERT="./tuic-cert.pem"
 TUIC_KEY="./tuic-key.pem"
 TUIC_LINK="./tuic_link.txt"
 
-XRAY_BIN="./xray"
+XRAY_BIN="./xray"               # 手动上传 Xray 二进制
 XRAY_CONF="./xray.json"
 REALITY_KEY_FILE="./reality_key.txt"
 VLESS_INFO="./vless_reality_info.txt"
@@ -31,14 +29,6 @@ gen_uuid() {
     return
   fi
   openssl rand -hex 16 | sed -E 's/^(.{8})(.{4})(.{4})(.{4})(.{12})$/\1-\2-\3-\4-\5/'
-}
-
-fetch_to() {
-  local url="$1"; local out="$2"
-  curl -L --connect-timeout 10 -m 60 -o "$out" "$url" || {
-    echo "❌ 下载失败，请检查网络或手动下载 $url"
-    exit 1
-  }
 }
 
 ########################
@@ -66,9 +56,8 @@ generate_tuic_cert() {
 
 check_tuic() {
   if [[ ! -x "$TUIC_BIN" ]]; then
-    echo "📥 下载 TUIC..."
-    fetch_to "https://github.com/Itsusinn/tuic/releases/download/${TUIC_VERSION}/tuic-server-x86_64-linux" "$TUIC_BIN"
-    chmod +x "$TUIC_BIN"
+    echo "❌ TUIC 二进制文件不存在，请下载或上传至 $TUIC_BIN"
+    exit 1
   fi
 }
 
@@ -112,21 +101,13 @@ run_tuic() {
 ########################
 check_xray() {
   if [[ ! -x "$XRAY_BIN" ]]; then
-    echo "📥 下载 Xray-core ZIP 包并解压..."
-    fetch_to "$XRAY_ZIP_URL" "xray.zip"
-    unzip -o xray.zip -d . >/dev/null 2>&1
-    if [[ ! -f "./Xray-linux-64" ]]; then
-      echo "❌ 解压失败，未找到 Xray-linux-64"
-      exit 1
-    fi
-    mv -f ./Xray-linux-64 "$XRAY_BIN"
-    chmod +x "$XRAY_BIN"
-    rm -f xray.zip
+    echo "❌ Xray 二进制文件不存在，请手动上传 Linux 64bit 可执行文件至 $XRAY_BIN"
+    exit 1
   fi
 
   if command -v file >/dev/null 2>&1; then
     if ! file "$XRAY_BIN" | grep -qi ELF; then
-      echo "❌ Xray 不是 ELF 可执行文件，请检查上传或下载"
+      echo "❌ 上传的 Xray 不是 ELF 可执行文件，请确认已上传正确的 Xray-linux-64"
       exit 1
     fi
   fi
