@@ -14,11 +14,13 @@ TUIC_TOML="./server.toml"
 TUIC_CERT="./tuic-cert.pem"
 TUIC_KEY="./tuic-key.pem"
 TUIC_LINK="./tuic_link.txt"
+TUIC_LOG="./tuic.log"
 
-XRAY_BIN="./xray"               # 注意：上传的 ELF 文件命名为 xray
+XRAY_BIN="./xray"               # 上传的 ELF 文件命名为 xray
 XRAY_CONF="./xray.json"
 REALITY_KEY_FILE="./reality_key.txt"
 VLESS_INFO="./vless_reality_info.txt"
+XRAY_LOG="./xray.log"
 
 ########################
 # ===== 通用函数 =====
@@ -94,7 +96,8 @@ EOF
 }
 
 run_tuic() {
-  nohup "$TUIC_BIN" -c "$TUIC_TOML" >/dev/null 2>&1 &
+  nohup "$TUIC_BIN" -c "$TUIC_TOML" >"$TUIC_LOG" 2>&1 &
+  echo "✅ TUIC 已后台启动，日志：$TUIC_LOG"
 }
 
 ########################
@@ -174,7 +177,8 @@ EOF
 }
 
 run_vless() {
-  nohup "$XRAY_BIN" run -c "$XRAY_CONF" >/dev/null 2>&1 &
+  nohup "$XRAY_BIN" run -c "$XRAY_CONF" >"$XRAY_LOG" 2>&1 &
+  echo "✅ VLESS Reality 已后台启动，日志：$XRAY_LOG"
 }
 
 ########################
@@ -186,17 +190,20 @@ main() {
   VLESS_UUID=$(gen_uuid)
   TUIC_PASSWORD=$(openssl rand -hex 16)
 
+  # TUIC
   generate_tuic_cert
   check_tuic
   generate_tuic_config
   IP=$(curl -s https://api64.ipify.org || echo "127.0.0.1")
   generate_tuic_link "$IP"
 
+  # VLESS Reality
   check_xray
   generate_reality_keys
   generate_vless_config
   generate_vless_link
 
+  # 启动服务
   run_vless
   run_tuic
 
