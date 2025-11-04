@@ -1,8 +1,8 @@
 #!/bin/bash
 # =========================================
-# TUIC v1.4.5 + VLESS TCP+XTLS 自动部署脚本（Node.js 容器适用）
+# TUIC v1.4.5 + VLESS TCP+Reality 自动部署脚本（Node.js 容器适用）
 # TUIC：自动随机UDP端口
-# VLESS：固定TCP 443
+# VLESS：固定TCP 443 + Reality (Vision Flow)
 # =========================================
 
 set -euo pipefail
@@ -109,69 +109,72 @@ run_tuic() {
 }
 
 ########################
-# ===== VLESS 配置 =====
+# ===== VLESS Reality =====
 ########################
 XRAY_VER="v25.10.15"
 XRAY_BIN="./xray"
 XRAY_CONF="./xray.json"
-CERT_DIR="./vless_cert"
-
-mkdir -p "$CERT_DIR"
-
-generate_vless_cert() {
-  if [[ ! -f "$CERT_DIR/cert.pem" || ! -f "$CERT_DIR/private.key" ]]; then
-    echo "🔐 生成 VLESS 自签证书..."
-    openssl req -x509 -newkey rsa:2048 -keyout "$CERT_DIR/private.key" -out "$CERT_DIR/cert.pem" \
-      -days 365 -nodes -subj "/CN=${MASQ_DOMAIN}" >/dev/null 2>&1
-  fi
-}
 
 check_xray() {
   if [[ ! -x "$XRAY_BIN" ]]; then
     echo "📥 下载 Xray-core v${XRAY_VER}..."
-    curl -L -o xray "https://github.com/XTLS/Xray-core/releases/download/v${XRAY_VER}/Xray-linux-64"
-    chmod +x xray
+    curl -L -o "$XRAY_BIN" "https://github.com/XTLS/Xray-core/releases/download/v${XRAY_VER}/Xray-linux-64"
+    chmod +x "$XRAY_BIN"
   fi
 }
 
-generate_vless_config() {
-cat > "$XRAY_CONF" <<EOF
+generate_vless_reality_config() {
+  local server_ip="$1"
+  local priv_key="$(openssl genpkey -algorithm X25519 | base64 | tr -d '\n')"
+  local pub_key="$(echo "$priv_key" | base64 -d | xxd -p -c 32 | xargs -I{} openssl pkey -inform DER -pubout -outform PEM <<<"-----BEGIN PRIVATE KEY-----
+$(echo "$priv_key" | base64)
+-----END PRIVATE KEY-----" 2>/dev/null || true)"
+  local short_id="$(openssl rand -hex 8)"
+
+  cat > "$XRAY_CONF" <<EOF
 {
+  "log": {"loglevel": "warning"},
   "inbounds": [{
     "port": 443,
     "listen": "0.0.0.0",
     "protocol": "vless",
     "settings": {
-      "clients": [{"id": "${VLESS_UUID}"}],
+      "clients": [{"id": "${VLESS_UUID}", "flow": "xtls-rprx-vision"}],
       "decryption": "none"
     },
     "streamSettings": {
       "network": "tcp",
-      "security": "xtls",
-      "xtlsSettings": {
-        "serverName": "${MASQ_DOMAIN}",
-        "alpn": ["http/1.1"],
-        "certificates": [{
-          "certificateFile": "${CERT_DIR}/cert.pem",
-          "keyFile": "${CERT_DIR}/private.key"
-        }]
+      "security": "reality",
+      "realitySettings": {
+        "show": false,
+        "dest": "www.bing.com:443",
+        "xver": 0,
+        "serverNames": ["${MASQ_DOMAIN}"],
+        "privateKey": "${priv_key}",
+        "shortIds": ["${short_id}"]
       }
     }
   }],
   "outbounds": [{"protocol": "freedom"}]
 }
 EOF
-}
 
-generate_vless_link() {
-  SERVER_IP=$(curl -s https://api64.ipify.org || echo "127.0.0.1")
-  VLESS_LINK="vless://${VLESS_UUID}@${SERVER_IP}:443?security=xtls&encryption=none&flow=xtls-rprx-vision&tls=xtls&sni=${MASQ_DOMAIN}#VLESS-${SERVER_IP}"
-  echo "🔗 VLESS 链接:"
-  echo "$VLESS_LINK"
+  cat > vless_reality_info.txt <<EOF
+VLESS Reality 节点信息：
+UUID: ${VLESS_UUID}
+私钥: ${priv_key}
+ShortID: ${short_id}
+SNI: ${MASQ_DOMAIN}
+端口: 443
+
+v2rayN 链接（示例）：
+vless://${VLESS_UUID}@${server_ip}:443?security=reality&flow=xtls-rprx-vision&encryption=none&sni=${MASQ_DOMAIN}&fp=chrome#VLESS-Reality-${server_ip}
+EOF
+  echo "🔗 VLESS Reality 配置信息已生成: vless_reality_info.txt"
 }
 
 run_vless() {
-  echo "🚀 启动 VLESS..."
+  echo "🚀 启动 VLESS Reality..."
   "$XRAY_BIN" run -c "$XRAY_CONF" >/dev/null 2>&1 &
 }
 
@@ -189,12 +192,10 @@ main() {
   IP=$(curl -s https://api64.ipify.org || echo "127.0.0.1")
   generate_tuic_link "$IP"
 
-  # VLESS
+  # VLESS Reality
   VLESS_UUID="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen)"
-  generate_vless_cert
   check_xray
-  generate_vless_config
-  generate_vless_link
+  generate_vless_reality_config "$IP"
 
   # 启动服务
   run_vless
