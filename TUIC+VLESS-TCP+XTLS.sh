@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-# ===== 基本信息 =====
+# ===== 基本配置 =====
 DOMAIN=www.bing.com
 UUID=$(cat /proc/sys/kernel/random/uuid)
 XRAY_VER="v1.8.8"
@@ -17,13 +17,21 @@ if [ ! -f "$CERT_DIR/cert.pem" ]; then
     -days 365 -nodes -subj "/CN=${DOMAIN}" >/dev/null 2>&1
 fi
 
-# ===== 下载 Xray 可执行文件（仅核心）=====
+# ===== 下载 Xray-core (tar.gz 版本) =====
 if [ ! -x "$XRAY_BIN" ]; then
   echo "📥 下载 Xray-core (Lite)..."
-  curl -L -o xray.zip "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VER}/Xray-linux-64.zip"
-  busybox unzip -q xray.zip xray
+  curl -L -o xray.tgz "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VER}/Xray-linux-64.zip"
+  # 自动检测是否存在 unzip 或 tar
+  if command -v unzip >/dev/null 2>&1; then
+    unzip -q xray.tgz xray
+  elif command -v tar >/dev/null 2>&1; then
+    tar -xzf xray.tgz xray 2>/dev/null || true
+  else
+    echo "❌ 环境缺少 unzip 或 tar，请安装其中之一"
+    exit 1
+  fi
   chmod +x xray
-  rm -f xray.zip
+  rm -f xray.tgz
 fi
 
 # ===== 生成配置 =====
