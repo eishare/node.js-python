@@ -1,22 +1,26 @@
 #!/bin/bash
 # =========================================
-# VLESS + WS + TLS（IP 直连 + CDN 兼容）
-# 翼龙面板：自动匹配 SERVER_PORT
-# 客户端链接使用 IP 地址
-# 解决：端口非443、CDN -1
+# VLESS + WS + TLS（强制监听 443）
+# 翼龙面板：外部 3250 → 内部 443
+# 客户端链接使用 IP + 3250
+# 解决：端口错乱、-1 延迟
 # =========================================
 set -uo pipefail
 
-# ========== 自动检测端口（翼龙环境变量优先）==========
+# ========== 强制内部监听 443（CDN/TLS 必须）==========
+INTERNAL_PORT=443
+echo "Internal listening port: $INTERNAL_PORT"
+
+# ========== 自动检测外部端口（翼龙 SERVER_PORT）==========
 if [[ -n "${SERVER_PORT:-}" ]]; then
-  PORT="$SERVER_PORT"
-  echo "Port (env): $PORT"
+  EXTERNAL_PORT="$SERVER_PORT"
+  echo "External port (env): $EXTERNAL_PORT"
 elif [[ $# -ge 1 && -n "$1" ]]; then
-  PORT="$1"
-  echo "Port (arg): $PORT"
+  EXTERNAL_PORT="$1"
+  echo "External port (arg): $EXTERNAL_PORT"
 else
-  PORT=443
-  echo "Port (default): $PORT"
+  EXTERNAL_PORT=3250
+  echo "External port (default): $EXTERNAL_PORT"
 fi
 
 # ========== 获取服务器 IP ==========
@@ -29,21 +33,23 @@ VLESS_BIN="./xray"
 VLESS_CONFIG="vless-ws-tls.json"
 VLESS_LINK="vless_link.txt"
 
-# 证书路径（支持自定义上传）
-CERT_DIR="${CERT_DIR:-/certs}"
+# 证书路径
+CERT_DIR="/certs"
 CERT_PEM="$CERT_DIR/fullchain.pem"
 KEY_PEM="$CERT_DIR/privkey.pem"
 
-# ========== 检查证书 ==========
+# ========== 检查证书（必须真实证书）==========
 check_cert() {
   if [[ -f "$CERT_PEM" && -f "$KEY_PEM" ]]; then
     echo "Using certificate: $CERT_PEM"
-    return 0
   else
-    echo "Certificate not found! Generating self-signed..."
-    mkdir -p "$CERT_DIR"
-    openssl req -x509 -newkey rsa:2048 -keyout "$KEY_PEM" -out "$CERT_PEM" \
-      -days 365 -nodes -subj "/CN=$IP" >/dev/null 2>&1
+    echo "ERROR: 证书未找到！"
+    echo "请上传 Let's Encrypt 证书到："
+    echo "  $CERT_PEM"
+    echo "  $KEY_PEM"
+    echo "或运行："
+    echo "certbot certonly --standalone -d yourdomain.com"
+    exit 1
   fi
 }
 
@@ -58,13 +64,13 @@ get_xray() {
   fi
 }
 
-# ========== 生成配置 ==========
+# ========== 生成配置（监听 443）==========
 gen_config() {
   cat > "$VLESS_CONFIG" <<EOF
 {
   "log": {"loglevel": "warning"},
   "inbounds": [{
-    "port": $PORT,
+    "port": $INTERNAL_PORT,
     "protocol": "vless",
     "settings": {
       "clients": [{"id": "$VLESS_UUID"}],
@@ -91,32 +97,32 @@ gen_config() {
 EOF
 }
 
-# ========== 生成客户端链接（使用 IP）==========
+# ========== 生成客户端链接（外部端口）==========
 gen_link() {
-  local encoded_path=$(printf '%s' "$WS_PATH" | jq -Rr @uri)
+  local encoded_path=$(printf '%s' "$WS_PATH" | jq -Rr @uri 2>/dev/null || printf '%s' "$WS_PATH")
   cat > "$VLESS_LINK" <<EOF
-vless://$VLESS_UUID@$IP:$PORT?encryption=none&security=tls&type=ws&host=$IP&path=$encoded_path#VLESS-WS-IP
+vless://$VLESS_UUID@$IP:$EXTERNAL_PORT?encryption=none&security=tls&type=ws&host=$IP&path=$encoded_path#VLESS-WS-3250
 EOF
 
   echo "========================================="
-  echo "VLESS + WS + TLS 节点已就绪！"
+  echo "VLESS + WS + TLS 部署成功！"
+  echo "内部端口: $INTERNAL_PORT (TLS)"
+  echo "外部端口: $EXTERNAL_PORT (翼龙映射)"
   echo "IP: $IP"
-  echo "Port: $PORT"
   echo "WS Path: $WS_PATH"
   echo ""
-  echo "客户端链接（IP 直连）："
+  echo "客户端链接："
   cat "$VLESS_LINK"
   echo ""
-  echo "CDN 模式（可选）："
-  echo "1. Cloudflare 添加 A 记录: cdn.example.com → $IP"
-  echo "2. 开启代理（橙色云）"
-  echo "3. 客户端改 host=cdn.example.com"
+  echo "翼龙面板设置："
+  echo "  端口: $EXTERNAL_PORT (TCP)"
+  echo "  映射: $EXTERNAL_PORT → $INTERNAL_PORT"
   echo "========================================="
 }
 
 # ========== 启动 ==========
 run_vless() {
-  echo "Starting VLESS-WS-TLS on :$PORT..."
+  echo "Starting VLESS-WS-TLS on :$INTERNAL_PORT..."
   exec "$VLESS_BIN" run -c "$VLESS_CONFIG"
 }
 
