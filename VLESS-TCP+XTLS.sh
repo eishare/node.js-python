@@ -15,7 +15,7 @@ TUIC_CERT="./tuic-cert.pem"
 TUIC_KEY="./tuic-key.pem"
 TUIC_LINK="./tuic_link.txt"
 
-XRAY_BIN="./xray"               # 用户手动上传 Xray-linux-64
+XRAY_BIN="./xray"               # 注意：上传的 ELF 文件命名为 xray
 XRAY_CONF="./xray.json"
 REALITY_KEY_FILE="./reality_key.txt"
 VLESS_INFO="./vless_reality_info.txt"
@@ -102,13 +102,14 @@ run_tuic() {
 ########################
 check_xray() {
   if [[ ! -x "$XRAY_BIN" ]]; then
-    echo "❌ Xray 二进制文件不存在，请手动上传 Linux 64bit 可执行文件至 $XRAY_BIN"
+    echo "❌ Xray ELF 文件不存在，请手动上传 Linux 64bit 可执行文件至 $XRAY_BIN"
+    echo "注意：上传解压后的 xray 文件（不要上传 geoip.dat 或 geosite.dat 替代）"
     exit 1
   fi
 
   if command -v file >/dev/null 2>&1; then
     if ! file "$XRAY_BIN" | grep -qi ELF; then
-      echo "❌ Xray 不是 ELF 可执行文件，请检查上传的 Xray-linux-64 是否正确"
+      echo "❌ Xray 不是 ELF 可执行文件，请检查上传的 xray 是否正确"
       exit 1
     fi
   fi
@@ -119,7 +120,7 @@ generate_reality_keys() {
   PRIVATE_KEY=$(grep -i "Private key" "$REALITY_KEY_FILE" | awk -F': ' '{print $2}' | tr -d '\r\n')
   PUBLIC_KEY=$(grep -i "Public key" "$REALITY_KEY_FILE" | awk -F': ' '{print $2}' | tr -d '\r\n')
   if [[ -z "$PRIVATE_KEY" || -z "$PUBLIC_KEY" ]]; then
-    echo "❌ Reality 密钥生成失败，请检查 ./xray 是否支持 x25519"
+    echo "❌ Reality 密钥生成失败，请检查 $XRAY_BIN 是否支持 x25519"
     exit 1
   fi
 }
