@@ -15,7 +15,7 @@ TUIC_CERT="./tuic-cert.pem"
 TUIC_KEY="./tuic-key.pem"
 TUIC_LINK="./tuic_link.txt"
 
-XRAY_BIN="./xray"               # 手动上传 Xray 二进制
+XRAY_BIN="./xray"               # 用户手动上传 Xray-linux-64
 XRAY_CONF="./xray.json"
 REALITY_KEY_FILE="./reality_key.txt"
 VLESS_INFO="./vless_reality_info.txt"
@@ -56,8 +56,9 @@ generate_tuic_cert() {
 
 check_tuic() {
   if [[ ! -x "$TUIC_BIN" ]]; then
-    echo "❌ TUIC 二进制文件不存在，请下载或上传至 $TUIC_BIN"
-    exit 1
+    echo "📥 下载 TUIC..."
+    curl -L -o "$TUIC_BIN" "https://github.com/Itsusinn/tuic/releases/download/${TUIC_VERSION}/tuic-server-x86_64-linux"
+    chmod +x "$TUIC_BIN"
   fi
 }
 
@@ -107,7 +108,7 @@ check_xray() {
 
   if command -v file >/dev/null 2>&1; then
     if ! file "$XRAY_BIN" | grep -qi ELF; then
-      echo "❌ 上传的 Xray 不是 ELF 可执行文件，请确认已上传正确的 Xray-linux-64"
+      echo "❌ Xray 不是 ELF 可执行文件，请检查上传的 Xray-linux-64 是否正确"
       exit 1
     fi
   fi
