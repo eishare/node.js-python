@@ -19,17 +19,9 @@ fi
 
 # ===== 下载 Xray-core (tar.gz 版本) =====
 if [ ! -x "$XRAY_BIN" ]; then
-  echo "📥 下载 Xray-core (Lite)..."
-  curl -L -o xray.tgz "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VER}/Xray-linux-64.zip"
-  # 自动检测是否存在 unzip 或 tar
-  if command -v unzip >/dev/null 2>&1; then
-    unzip -q xray.tgz xray
-  elif command -v tar >/dev/null 2>&1; then
-    tar -xzf xray.tgz xray 2>/dev/null || true
-  else
-    echo "❌ 环境缺少 unzip 或 tar，请安装其中之一"
-    exit 1
-  fi
+  echo "📥 下载 Xray-core (tar.gz 版)..."
+  curl -L -o xray.tgz "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VER}/Xray-linux-64.tar.gz"
+  tar -xzf xray.tgz xray >/dev/null 2>&1
   chmod +x xray
   rm -f xray.tgz
 fi
