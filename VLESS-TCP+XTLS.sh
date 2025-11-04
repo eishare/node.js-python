@@ -125,11 +125,13 @@ check_xray() {
 
 generate_vless_reality_config() {
   local server_ip="$1"
-  local priv_key="$(openssl genpkey -algorithm X25519 | base64 | tr -d '\n')"
-  local pub_key="$(echo "$priv_key" | base64 -d | xxd -p -c 32 | xargs -I{} openssl pkey -inform DER -pubout -outform PEM <<<"-----BEGIN PRIVATE KEY-----
-$(echo "$priv_key" | base64)
------END PRIVATE KEY-----" 2>/dev/null || true)"
-  local short_id="$(openssl rand -hex 8)"
+
+  echo "🔑 生成 Reality 密钥对..."
+  local key_output
+  key_output=$($XRAY_BIN x25519)
+  local priv_key=$(echo "$key_output" | grep "Private key" | awk '{print $3}')
+  local pub_key=$(echo "$key_output" | grep "Public key" | awk '{print $3}')
+  local short_id=$(openssl rand -hex 8)
 
   cat > "$XRAY_CONF" <<EOF
 {
@@ -161,16 +163,20 @@ EOF
 
   cat > vless_reality_info.txt <<EOF
 VLESS Reality 节点信息：
+=============================
 UUID: ${VLESS_UUID}
-私钥: ${priv_key}
+私钥 (privateKey): ${priv_key}
+公钥 (publicKey): ${pub_key}
 ShortID: ${short_id}
 SNI: ${MASQ_DOMAIN}
 端口: 443
+=============================
 
-v2rayN 链接（示例）：
-vless://${VLESS_UUID}@${server_ip}:443?security=reality&flow=xtls-rprx-vision&encryption=none&sni=${MASQ_DOMAIN}&fp=chrome#VLESS-Reality-${server_ip}
+v2rayN / Nekoray 节点导入链接：
+vless://${VLESS_UUID}@${server_ip}:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${MASQ_DOMAIN}&fp=chrome&pbk=${pub_key}&sid=${short_id}#VLESS-Reality-${server_ip}
 EOF
-  echo "🔗 VLESS Reality 配置信息已生成: vless_reality_info.txt"
+
+  echo "✅ Reality 节点信息已生成：vless_reality_info.txt"
 }
 
 run_vless() {
