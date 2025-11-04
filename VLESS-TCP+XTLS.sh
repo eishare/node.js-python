@@ -24,10 +24,10 @@ random_port() { echo $(( (RANDOM % 40000) + 20000 )); }
 read_tuic_port() {
   if [[ -n "${SERVER_PORT:-}" ]]; then
     TUIC_PORT="$SERVER_PORT"
-    echo "✅ Using environment port: $TUIC_PORT"
+    echo "✅ 使用环境端口: $TUIC_PORT"
   else
     TUIC_PORT=$(random_port)
-    echo "🎲 TUIC random UDP port: $TUIC_PORT"
+    echo "🎲 TUIC 随机UDP端口: $TUIC_PORT"
   fi
 }
 
@@ -174,7 +174,7 @@ generate_vless_link() {
 
 run_vless() {
   echo "🚀 启动 VLESS..."
-  exec "$XRAY_BIN" run -c "$XRAY_CONF"
+  "$XRAY_BIN" run -c "$XRAY_CONF" >/dev/null 2>&1 &
 }
 
 ########################
@@ -198,9 +198,9 @@ main() {
   generate_vless_config
   generate_vless_link
 
-  # 并行启动
-  run_tuic &
-  run_vless &
+  # 启动服务
+  run_vless
+  run_tuic
   wait
 }
 
