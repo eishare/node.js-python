@@ -1,8 +1,8 @@
 #!/bin/bash
 # =========================================
-# 单节点：VLESS + TCP + Reality
+# 纯 VLESS + TCP + Reality 单节点
 # 翼龙面板专用：自动检测端口
-# 零冲突、Reality 伪装、单端口
+# 零冲突、Reality 伪装、XTLS 极速
 # =========================================
 set -uo pipefail
 
@@ -24,21 +24,23 @@ VLESS_BIN="./xray"
 VLESS_CONFIG="vless-reality.json"
 VLESS_LINK="vless_link.txt"
 
-# ========== 加载配置 ==========
+# ========== 加载已有配置 ==========
 load_config() {
-  [[ -f "$VLESS_CONFIG" ]] && {
+  if [[ -f "$VLESS_CONFIG" ]]; then
     VLESS_UUID=$(grep -o '"id": "[^"]*' "$VLESS_CONFIG" | head -1 | cut -d'"' -f4)
-  }
+    echo "Loaded existing UUID: $VLESS_UUID"
+  fi
 }
 
 # ========== 下载 Xray ==========
 get_xray() {
-  [[ -x "$VLESS_BIN" ]] && return
-  echo "Downloading Xray..."
-  curl -L -o xray.zip "https://github.com/XTLS/Xray-core/releases/download/v1.8.23/Xray-linux-64.zip" --fail --connect-timeout 15
-  unzip -j xray.zip xray -d . >/dev/null 2>&1
-  rm -f xray.zip
-  chmod +x "$VLESS_BIN"
+  if [[ ! -x "$VLESS_BIN" ]]; then
+    echo "Downloading Xray v1.8.23..."
+    curl -L -o xray.zip "https://github.com/XTLS/Xray-core/releases/download/v1.8.23/Xray-linux-64.zip" --fail --connect-timeout 15
+    unzip -j xray.zip xray -d . >/dev/null 2>&1
+    rm -f xray.zip
+    chmod +x "$VLESS_BIN"
+  fi
 }
 
 # ========== 生成 VLESS Reality 配置 ==========
@@ -79,10 +81,13 @@ gen_vless_config() {
 }
 EOF
 
-  echo "Reality Public Key: $pub" > reality_info.txt
-  echo "Reality Short ID: $shortId" >> reality_info.txt
-  echo "VLESS UUID: $VLESS_UUID" >> reality_info.txt
-  echo "Port: $PORT" >> reality_info.txt
+  # 保存 Reality 信息
+  cat > reality_info.txt <<EOF
+Reality Public Key: $pub
+Reality Short ID: $shortId
+VLESS UUID: $VLESS_UUID
+Port: $PORT
+EOF
 }
 
 # ========== 生成客户端链接 ==========
@@ -91,25 +96,28 @@ gen_link() {
   local pub=$(grep "Public Key" reality_info.txt | awk '{print $4}')
   local sid=$(grep "Short ID" reality_info.txt | awk '{print $4}')
 
-  printf "vless://%s@%s:%s?encryption=none&flow=xtls-rprx-vision&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&type=tcp&spx=/#VLESS-Reality\n" \
-    "$VLESS_UUID" "$ip" "$PORT" "$MASQ_DOMAIN" "$pub" "$sid" > "$VLESS_LINK"
+  cat > "$VLESS_LINK" <<EOF
+vless://$VLESS_UUID@$ip:$PORT?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$MASQ_DOMAIN&fp=chrome&pbk=$pub&sid=$sid&type=tcp&spx=/#VLESS-Reality
+EOF
 
   echo "========================================="
-  echo "VLESS Reality Node:"
+  echo "VLESS + TCP + Reality Node:"
   cat "$VLESS_LINK"
   echo "========================================="
 }
 
 # ========== 启动服务 ==========
 run_vless() {
-  echo "Starting VLESS Reality on :$PORT..."
-  while :; do
+  echo "Starting VLESS Reality on :$PORT (XTLS-Vision)..."
+  while true; do
     "$VLESS_BIN" run -c "$VLESS_CONFIG" >/dev/null 2>&1 || sleep 5
   done
 }
 
 # ========== 主函数 ==========
 main() {
+  echo "Deploying VLESS + TCP + Reality (Single Node)"
+
   load_config
   [[ -z "${VLESS_UUID:-}" ]] && VLESS_UUID=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || openssl rand -hex 16)
 
