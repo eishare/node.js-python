@@ -2,13 +2,13 @@
 # =========================================
 # TUIC (面板端口) + VLESS-Reality (80) 一键部署
 # 翼龙面板专用：VLESS 强制回源 80 端口
-# 修复：不再使用 443，100% 监听 80
+# 修复：语法错误、EOF 闭合、端口绑定
 # =========================================
 set -euo pipefail
 export LC_ALL=C
 IFS=$'\n\t'
 
-# ========== 自动检测 TUIC 端口（翼龙面板开放的端口）==========
+# ========== 自动检测 TUIC 端口 ==========
 if [[ -n "${SERVER_PORT:-}" ]]; then
   TUIC_PORT="$SERVER_PORT"
   echo "TUIC Port (env): $TUIC_PORT"
@@ -36,46 +36,49 @@ VLESS_LINK="vless_link.txt"
 
 # ========== 加载已有配置 ==========
 load_config() {
-  [[ -f "$TUIC_TOML" ]] && {
+  if [[ -f "$TUIC_TOML" ]]; then
     TUIC_UUID=$(grep '^\[users\]' -A2 "$TUIC_TOML" | tail -n1 | awk '{print $1}')
     TUIC_PASS=$(grep '^\[users\]' -A2 "$TUIC_TOML" | tail -n1 | awk -F'"' '{print $3}')
     echo "TUIC config loaded."
-  }
-  [[ -f "$VLESS_CONFIG" ]] && {
+  fi
+  if [[ -f "$VLESS_CONFIG" ]]; then
     VLESS_UUID=$(grep -o '"id": "[^"]*' "$VLESS_CONFIG" | head -1 | cut -d'"' -f4)
     echo "VLESS config loaded."
-  }
+  fi
 }
 
 # ========== 生成 TUIC 自签名证书 ==========
 gen_tuic_cert() {
-  [[ -f tuic-cert.pem && -f tuic-key.pem ]] && return
-  echo "Generating TUIC cert..."
-  openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
-    -keyout tuic-key.pem -out tuic-cert.pem -subj "/CN=$MASQ_DOMAIN" -days 365 -nodes >/dev/null 2>&1
+  if [[ ! -f tuic-cert.pem || ! -f tuic-key.pem ]]; then
+    echo "Generating TUIC cert..."
+    openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+      -keyout tuic-key.pem -out tuic-cert.pem -subj "/CN=$MASQ_DOMAIN" -days 365 -nodes >/dev/null 2>&1
+  fi
 }
 
 # ========== 下载 tuic-server ==========
 get_tuic() {
-  [[ -x "$TUIC_BIN" ]] && return
-  echo "Downloading tuic-server v1.4.5..."
-  curl -L -o "$TUIC_BIN" "https://github.com/Itsusinn/tuic/releases/download/v1.4.5/tuic-server-x86_64-linux" --fail --connect-timeout 10
-  chmod +x "$TUIC_BIN"
+  if [[ ! -x "$TUIC_BIN" ]]; then
+    echo "Downloading tuic-server v1.4.5..."
+    curl -L -o "$TUIC_BIN" "https://github.com/Itsusinn/tuic/releases/download/v1.4.5/tuic-server-x86_64-linux" --fail --connect-timeout 10
+    chmod +x "$TUIC_BIN"
+  fi
 }
 
 # ========== 下载 Xray ==========
 get_xray() {
-  [[ -x "$VLESS_BIN" ]] && return
-  echo "Downloading Xray v1.8.23..."
-  curl -L -o xray.zip "https://github.com/XTLS/Xray-core/releases/download/v1.8.23/Xray-linux-64.zip" --fail --connect-timeout 15
-  unzip -j xray.zip xray -d . >/dev/null 2>&1
-  rm xray.zip
-  chmod +x "$VLESS_BIN"
+  if [[ ! -x "$VLESS_BIN" ]]; then
+    echo "Downloading Xray v1.8.23..."
+    curl -L -o xray.zip "https://github.com/XTLS/Xray-core/releases/download/v1.8.23/Xray-linux-64.zip" --fail --connect-timeout 15
+    unzip -j xray.zip xray -d . >/dev/null 2>&1
+    rm -f xray.zip
+    chmod +x "$VLESS_BIN"
+  fi
 }
 
 # ========== 生成 TUIC 配置 ==========
 gen_tuic_config() {
-cat > "$TUIC_TOML" <<EOF
+  cat > "$TUIC_TOML" << 'EOF'
 log_level = "warn"
 server = "0.0.0.0:${TUIC_PORT}"
 udp_relay_ipv6 = false
@@ -108,6 +111,11 @@ max_idle_time = "25s"
 controller = "bbr"
 initial_window = 6291456
 EOF
+
+  # 替换变量
+  sed -i "s|\${TUIC_PORT}|$TUIC_PORT|g" "$TUIC_TOML"
+  sed -i "s|\${TUIC_UUID}|$TUIC_UUID|g" "$TUIC_TOML"
+  sed -i "s|\${TUIC_PASS}|$TUIC_PASS|g" "$TUIC_TOML"
 }
 
 # ========== 生成 VLESS Reality 配置（强制 80 端口）==========
@@ -119,7 +127,7 @@ gen_vless_config() {
 
   echo "Generating VLESS Reality config on port $VLESS_PORT..."
 
-cat > "$VLESS_CONFIG" <<EOF
+  cat > "$VLESS_CONFIG" << EOF
 {
   "log": {"loglevel": "warning"},
   "inbounds": [{
@@ -150,7 +158,7 @@ cat > "$VLESS_CONFIG" <<EOF
 }
 EOF
 
-  cat > reality_info.txt <<EOF
+  cat > reality_info.txt << EOF
 Reality Public Key: $pub
 Reality Short ID: $shortId
 VLESS UUID: $VLESS_UUID
@@ -161,13 +169,13 @@ EOF
 # ========== 生成客户端链接 ==========
 gen_links() {
   local ip="$1"
-  cat > "$TUIC_LINK" <<EOF
+  cat > "$TUIC_LINK" << EOF
 tuic://${TUIC_UUID}:${TUIC_PASS}@${ip}:${TUIC_PORT}?congestion_control=bbr&alpn=h3&allowInsecure=1&sni=${MASQ_DOMAIN}&udp_relay_mode=native#TUIC-${TUIC_PORT}
 EOF
 
   local pub=$(grep "Public Key" reality_info.txt | awk '{print $4}')
   local sid=$(grep "Short ID" reality_info.txt | awk '{print $4}')
-  cat > "$VLESS_LINK" <<EOF
+  cat > "$VLESS_LINK" << EOF
 vless://${VLESS_UUID}@${ip}:${VLESS_PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${MASQ_DOMAIN}&fp=chrome&pbk=${pub}&sid=${sid}&type=tcp&spx=%2F#VLESS-Reality-80
 EOF
 
@@ -223,4 +231,9 @@ main() {
   gen_links "$ip"
 
   echo "Starting services..."
-  run_tuic
+  run_tuic &
+  run_vless &
+  wait
+}
+
+main "$@"
