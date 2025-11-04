@@ -15,7 +15,7 @@ TUIC_CERT="./tuic-cert.pem"
 TUIC_KEY="./tuic-key.pem"
 TUIC_LINK="./tuic_link.txt"
 
-XRAY_BIN="./Xray-linux-64"       # 更新为 Xray-linux-64
+XRAY_BIN="./xray"               # 用户手动上传 Xray-linux-64
 XRAY_CONF="./xray.json"
 REALITY_KEY_FILE="./reality_key.txt"
 VLESS_INFO="./vless_reality_info.txt"
@@ -119,7 +119,7 @@ generate_reality_keys() {
   PRIVATE_KEY=$(grep -i "Private key" "$REALITY_KEY_FILE" | awk -F': ' '{print $2}' | tr -d '\r\n')
   PUBLIC_KEY=$(grep -i "Public key" "$REALITY_KEY_FILE" | awk -F': ' '{print $2}' | tr -d '\r\n')
   if [[ -z "$PRIVATE_KEY" || -z "$PUBLIC_KEY" ]]; then
-    echo "❌ Reality 密钥生成失败，请检查 $XRAY_BIN 是否支持 x25519"
+    echo "❌ Reality 密钥生成失败，请检查 ./xray 是否支持 x25519"
     exit 1
   fi
 }
