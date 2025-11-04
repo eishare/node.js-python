@@ -1,8 +1,8 @@
 #!/bin/bash
 # =========================================
 # TUIC v1.4.5 + VLESS TCP+XTLS 自动部署脚本（Node.js 容器适用）
-# TUIC：自动检测UDP端口
-# VLESS：固定443端口
+# TUIC：自动随机UDP端口
+# VLESS：固定TCP 443
 # =========================================
 
 set -euo pipefail
@@ -129,10 +129,8 @@ generate_vless_cert() {
 check_xray() {
   if [[ ! -x "$XRAY_BIN" ]]; then
     echo "📥 下载 Xray-core v${XRAY_VER}..."
-    curl -L -o xray.tgz "https://ghproxy.net/https://github.com/XTLS/Xray-core/releases/download/v${XRAY_VER}/Xray-linux-64.tar.gz"
-    tar -xzf xray.tgz xray >/dev/null 2>&1
+    curl -L -o xray "https://github.com/XTLS/Xray-core/releases/download/v${XRAY_VER}/Xray-linux-64"
     chmod +x xray
-    rm -f xray.tgz
   fi
 }
 
