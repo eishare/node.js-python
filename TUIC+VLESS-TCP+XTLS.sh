@@ -1,232 +1,107 @@
 #!/bin/bash
-# =========================================
-# TUIC v1.4.5 over QUIC + VLESS TCP+XTLS 自动部署脚本（精简版，适合64MB容器）
-# Tuic 随机端口，VLESS 固定 443，TLS 共用
-# 固定 SNI：www.bing.com
-# =========================================
-set -euo pipefail
-export LC_ALL=C
-IFS=$'\n\t'
+set -e
 
-MASQ_DOMAIN="www.bing.com"
-SERVER_TOML="server.toml"
-CERT_PEM="tuic-cert.pem"
-KEY_PEM="tuic-key.pem"
-LINK_TXT="tuic_link.txt"
-TUIC_BIN="./tuic-server"
+echo "✅ Using environment port: ${PORT:-$(shuf -i 1000-9999 -n 1)}"
+PORT=${PORT:-$(shuf -i 1000-9999 -n 1)}
+TUIC_PORT=$PORT
+DOMAIN=www.bing.com
 
-VLESS_DIR="$HOME/vless"
-VLESS_BIN="$VLESS_DIR/xray"
-VLESS_CONF="$VLESS_DIR/config.json"
-VLESS_LINK="vless_link.txt"
-VLESS_PORT=443
+# 临时工作目录
+WORKDIR=$(mktemp -d)
+cd $WORKDIR
 
-# ========== 随机端口 ==========
-random_port() {
-  echo $(( (RANDOM % 40000) + 20000 ))
-}
+# ========= 安装依赖 =========
+apt update -y >/dev/null 2>&1 || true
+apt install -y wget curl unzip jq openssl >/dev/null 2>&1 || true
 
-# ========== 选择端口 ==========
-read_port() {
-  if [[ $# -ge 1 && -n "${1:-}" ]]; then
-    TUIC_PORT="$1"
-    echo "✅ Using specified port: $TUIC_PORT"
-    return
-  fi
+# ========= 生成证书 =========
+echo "🔐 Generating self-signed certificate for $DOMAIN..."
+mkdir -p /root/certs
+openssl req -x509 -newkey rsa:2048 -keyout /root/certs/private.key -out /root/certs/cert.pem -days 3650 -nodes -subj "/CN=$DOMAIN" >/dev/null 2>&1
 
-  if [[ -n "${SERVER_PORT:-}" ]]; then
-    TUIC_PORT="$SERVER_PORT"
-    echo "✅ Using environment port: $TUIC_PORT"
-    return
-  fi
+# ========= 生成随机UUID/密码 =========
+UUID=$(cat /proc/sys/kernel/random/uuid)
+TUIC_UUID=$(cat /proc/sys/kernel/random/uuid)
+TUIC_PASS=$(openssl rand -hex 16)
 
-  TUIC_PORT=$(random_port)
-  echo "🎲 Random port selected: $TUIC_PORT"
-}
+# ========= 下载 TUIC =========
+echo "📥 Downloading tuic-server..."
+wget -qO tuic-server https://github.com/Itsusinn/tuic/releases/download/v1.4.5/tuic-server-x86_64-linux
+chmod +x tuic-server
 
-# ========== 检查已有配置 ==========
-load_existing_config() {
-  if [[ -f "$SERVER_TOML" ]]; then
-    TUIC_PORT=$(grep '^server' "$SERVER_TOML" | grep -Eo '[0-9]+')
-    TUIC_UUID=$(grep '^\[users\]' -A1 "$SERVER_TOML" | tail -n1 | awk '{print $1}')
-    TUIC_PASSWORD=$(grep '^\[users\]' -A1 "$SERVER_TOML" | tail -n1 | awk -F'"' '{print $2}')
-    echo "📂 Existing TUIC config detected. Loading..."
-    return 0
-  fi
-  return 1
-}
+# ========= 下载 Xray =========
+echo "📥 Downloading Xray-core (Lite)..."
+wget -qO xray.zip https://github.com/XTLS/Xray-core/releases/download/v1.8.8/Xray-linux-64.zip
+unzip -q xray.zip
+chmod +x xray
 
-# ========== 生成证书 ==========
-generate_cert() {
-  if [[ -f "$CERT_PEM" && -f "$KEY_PEM" ]]; then
-    echo "🔐 Certificate exists, skipping."
-    return
-  fi
-  echo "🔐 Generating self-signed certificate for ${MASQ_DOMAIN}..."
-  openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
-    -keyout "$KEY_PEM" -out "$CERT_PEM" -subj "/CN=${MASQ_DOMAIN}" -days 365 -nodes >/dev/null 2>&1
-  chmod 600 "$KEY_PEM"
-  chmod 644 "$CERT_PEM"
-}
-
-# ========== 下载 tuic-server ==========
-check_tuic_server() {
-  if [[ -x "$TUIC_BIN" ]]; then
-    echo "✅ tuic-server already exists."
-    return
-  fi
-  echo "📥 Downloading tuic-server..."
-  curl -L -o "$TUIC_BIN" "https://github.com/Itsusinn/tuic/releases/download/v1.4.5/tuic-server-x86_64-linux"
-  chmod +x "$TUIC_BIN"
-}
-
-# ========== 生成 TUIC 配置 ==========
-generate_config() {
-cat > "$SERVER_TOML" <<EOF
-log_level = "warn"
-server = "0.0.0.0:${TUIC_PORT}"
-
-udp_relay_ipv6 = false
-zero_rtt_handshake = true
-dual_stack = false
-auth_timeout = "8s"
-task_negotiation_timeout = "4s"
-gc_interval = "8s"
-gc_lifetime = "8s"
-max_external_packet_size = 8192
-
-[users]
-${TUIC_UUID} = "${TUIC_PASSWORD}"
-
-[tls]
-certificate = "$CERT_PEM"
-private_key = "$KEY_PEM"
-alpn = ["h3"]
-
-[restful]
-addr = "127.0.0.1:${TUIC_PORT}"
-secret = "$(openssl rand -hex 16)"
-maximum_clients_per_user = 999999999
-
-[quic]
-initial_mtu = $((1200 + RANDOM % 200))
-min_mtu = 1200
-gso = true
-pmtu = true
-send_window = 33554432
-receive_window = 16777216
-max_idle_time = "25s"
-
-[quic.congestion_control]
-controller = "bbr"
-initial_window = 6291456
-EOF
-}
-
-# ========== 获取公网IP ==========
-get_server_ip() {
-  curl -s --connect-timeout 3 https://api64.ipify.org || echo "127.0.0.1"
-}
-
-# ========== 生成 TUIC 链接 ==========
-generate_tuic_link() {
-  local ip="$1"
-  cat > "$LINK_TXT" <<EOF
-tuic://${TUIC_UUID}:${TUIC_PASSWORD}@${ip}:${TUIC_PORT}?congestion_control=bbr&alpn=h3&allowInsecure=1&sni=${MASQ_DOMAIN}&udp_relay_mode=native&disable_sni=0&reduce_rtt=1&max_udp_relay_packet_size=8192#TUIC-${ip}
-EOF
-  echo "🔗 TUIC link generated successfully:"
-  cat "$LINK_TXT"
-}
-
-# ========== 生成 VLESS 链接 ==========
-generate_vless_link() {
-    local ip="$1"
-    local vless_link="vless://${UUID}@${ip}:${VLESS_PORT}?security=xtls&encryption=none&flow=xtls-rprx-vision&tls=xtls&sni=${MASQ_DOMAIN}#VLESS-${ip}"
-    echo "$vless_link" > "$VLESS_LINK"
-    echo "🔗 VLESS link generated successfully:"
-    cat "$VLESS_LINK"
-}
-
-# ========== VLESS TCP+XTLS 精简部署 ==========
-deploy_vless() {
-  mkdir -p "$VLESS_DIR" && cd "$VLESS_DIR"
-
-  # 下载精简版 Xray-core
-  if [[ ! -x "$VLESS_BIN" ]]; then
-    echo "📥 Downloading Xray-core (Lite)..."
-    curl -L -o xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/xray-linux-64.zip
-    unzip -o xray.zip >/dev/null 2>&1
-    chmod +x xray
-    rm -f xray.zip   # 删除压缩包节省空间
-  fi
-
-  UUID=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen)
-  cat > "$VLESS_CONF" <<EOF
+# ========= TUIC 配置 =========
+cat > tuic.json <<EOF
 {
-  "inbounds": [
-    {
-      "port": $VLESS_PORT,
-      "protocol": "vless",
-      "settings": {
-        "clients": [
-          { "id": "$UUID" }
-        ],
-        "decryption": "none"
-      },
-      "streamSettings": {
-        "network": "tcp",
-        "security": "xtls",
-        "xtlsSettings": {
-          "alpn": ["h2","http/1.1"]
-        },
-        "tlsSettings": {
-          "certificates": [
-            { "certificateFile": "$CERT_PEM", "keyFile": "$KEY_PEM" }
-          ]
-        }
+  "server": {
+    "ip": "::",
+    "port": $TUIC_PORT,
+    "certificate": "/root/certs/cert.pem",
+    "private_key": "/root/certs/private.key",
+    "congestion_control": "bbr"
+  },
+  "users": {
+    "$TUIC_UUID": "$TUIC_PASS"
+  },
+  "alpn": ["h3"],
+  "log_level": "warn"
+}
+EOF
+
+# ========= VLESS 配置 =========
+cat > xray.json <<EOF
+{
+  "inbounds": [{
+    "port": 443,
+    "listen": "127.0.0.1",
+    "protocol": "vless",
+    "settings": {
+      "clients": [{"id": "$UUID"}],
+      "decryption": "none"
+    },
+    "streamSettings": {
+      "network": "tcp",
+      "security": "xtls",
+      "xtlsSettings": {
+        "serverName": "$DOMAIN",
+        "alpn": ["http/1.1"],
+        "certificates": [{
+          "certificateFile": "/root/certs/cert.pem",
+          "keyFile": "/root/certs/private.key"
+        }]
       }
     }
-  ],
-  "outbounds": [ { "protocol": "freedom" } ]
+  }],
+  "outbounds": [{
+    "protocol": "freedom"
+  }]
 }
 EOF
 
-  nohup "$VLESS_BIN" -config "$VLESS_CONF" >/dev/null 2>&1 &
-  echo "✅ VLESS TCP+XTLS 已启动，端口: $VLESS_PORT, UUID: $UUID"
-}
+# ========= 生成分享链接 =========
+SERVER_IP=$(curl -s ipv4.ip.sb || curl -s ipinfo.io/ip)
+VLESS_LINK="vless://${UUID}@${SERVER_IP}:443?security=xtls&encryption=none&flow=xtls-rprx-vision&tls=xtls&sni=${DOMAIN}#VLESS-${SERVER_IP}"
+TUIC_LINK="tuic://${TUIC_UUID}:${TUIC_PASS}@${SERVER_IP}:${TUIC_PORT}?congestion_control=bbr&alpn=h3&allowInsecure=1&sni=${DOMAIN}&udp_relay_mode=native&disable_sni=0&reduce_rtt=1&max_udp_relay_packet_size=8192#TUIC-${SERVER_IP}"
 
-# ========== TUIC 守护进程 ==========
-run_background_loop() {
-  echo "🚀 Starting TUIC server..."
-  while true; do
-    "$TUIC_BIN" -c "$SERVER_TOML" >/dev/null 2>&1 || true
-    echo "⚠️ TUIC crashed. Restarting in 5s..."
-    sleep 5
-  done
-}
+# ========= 启动服务 =========
+echo "✅ VLESS TCP+XTLS 已启动 (127.0.0.1:443)"
+echo "🔗 VLESS Link:"
+echo "$VLESS_LINK"
+echo ""
+echo "🔗 TUIC Link:"
+echo "$TUIC_LINK"
+echo ""
+echo "🚀 Starting TUIC & VLESS in background..."
 
-# ========== 主流程 ==========
-main() {
-  if ! load_existing_config; then
-    read_port "$@"
-    TUIC_UUID="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen)"
-    TUIC_PASSWORD="$(openssl rand -hex 16)"
-    generate_cert
-    check_tuic_server
-    generate_config
-  else
-    generate_cert
-    check_tuic_server
-  fi
+# 后台同时启动
+./xray run -c xray.json >/dev/null 2>&1 &
+./tuic-server -c tuic.json >/dev/null 2>&1 &
 
-  # 部署 VLESS TCP+XTLS 精简版
-  deploy_vless
-
-  ip="$(get_server_ip)"
-  generate_vless_link "$ip"  # 生成 VLESS 链接
-  generate_tuic_link "$ip"   # 生成 TUIC 链接
-
-  run_background_loop
-}
-
-main "$@"
+# 保持容器活跃
+echo "✅ All services running. Press Ctrl+C to exit."
+tail -f /dev/null
