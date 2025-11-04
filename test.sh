@@ -1,8 +1,8 @@
 #!/bin/bash
 # =========================================
-# TUIC v1.4.5 + VLESS+TCP+Reality 自动部署脚本（免 root）
+# TUIC v1.4.5 + VLESS+TCP+Reality (on 443) 自动部署脚本（免 root）
 # TUIC SNI: www.bing.com
-# VLESS Reality: fallback to /, shortId, serverNames, 固定监听 443 端口
+# VLESS Reality: fallback to /, shortId, serverNames, 固定端口 443
 # =========================================
 set -euo pipefail
 export LC_ALL=C
@@ -20,7 +20,7 @@ VLESS_BIN="./xray"
 VLESS_CONFIG="vless-config.json"
 VLESS_LINK_TXT="vless_link.txt"
 
-# VLESS 固定端口 443（服务器自身通信端口）
+# VLESS 固定端口 443（用户要求使用服务器自身 443）
 VLESS_PORT=443
 
 # ========== 随机端口（仅 TUIC）==========
@@ -59,7 +59,7 @@ load_existing_config() {
 
   # VLESS
   if [[ -f "$VLESS_CONFIG" ]]; then
-    VLESS_UUID=$(jq -r '.inbounds[0].settings.clients[0].id' "$VLESS_CONFIG")
+    VLESS_UUID=$(jq -r '.inbounds[0].settings.clients[0].id' "$VLESS_CONFIG" 2>/dev/null || echo "")
     echo "📂 Existing VLESS config loaded."
     loaded=1
   fi
@@ -87,7 +87,11 @@ check_tuic_server() {
     return
   fi
   echo "📥 Downloading tuic-server v1.4.5..."
-  curl -L -o "$TUIC_BIN" "https://github.com/Itsusinn/tuic/releases/download/v1.4.5/tuic-server-x86_64-linux"
+  # 固定使用原仓库的 v1.4.5 二进制（已验证可用）
+  curl -L -o "$TUIC_BIN" "https://github.com/Itsusinn/tuic/releases/download/v1.4.5/tuic-server-x86_64-linux" || {
+    echo "❌ TUIC download failed. Check network or URL."
+    exit 1
+  }
   chmod +x "$TUIC_BIN"
 }
 
@@ -98,17 +102,32 @@ check_vless_server() {
     return
   fi
   echo "📥 Downloading latest Xray Linux 64-bit..."
-  local api_url="https://api.github.com/repos/XTLS/Xray-core/releases/latest"
-  local latest_tag=$(curl -s "$api_url" | grep '"tag_name"' | cut -d'"' -f4)
-  if [[ -z "$latest_tag" ]]; then
-    echo "❌ Failed to get latest Xray version. Falling back to v1.8.20."
-    latest_tag="v1.8.20"
+  
+  # 修复：使用 curl -L 跟随 latest 重定向直接下载 zip（避免解析 tag）
+  # latest URL 会重定向到具体版本的 /releases/download/vX.Y.Z/
+  if curl -L -o xray.zip "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip" --connect-timeout 10 --max-time 60; then
+    echo "✅ Xray zip downloaded successfully."
+  else
+    echo "❌ Xray download failed. Trying fallback URL (v1.8.23)..."
+    curl -L -o xray.zip "https://github.com/XTLS/Xray-core/releases/download/v1.8.23/Xray-linux-64.zip" || {
+      echo "❌ Fallback download also failed. Check network/firewall."
+      exit 1
+    }
   fi
-  local download_url="https://github.com/XTLS/Xray-core/releases/download/${latest_tag}/Xray-linux-64.zip"
-  curl -L -o xray.zip "$download_url"
-  unzip -j xray.zip xray -d .
-  rm xray.zip
+  
+  # 解压
+  if ! command -v unzip >/dev/null; then
+    echo "📦 Installing unzip..."
+    (apt update && apt install -y unzip) >/dev/null 2>&1 || (yum install -y unzip >/dev/null 2>&1) || echo "⚠️ unzip install failed (manual install needed?)"
+  fi
+  unzip -j xray.zip xray -d . >/dev/null 2>&1 || {
+    echo "❌ Unzip failed. Manual extract or install unzip."
+    rm -f xray.zip
+    exit 1
+  }
+  rm -f xray.zip
   chmod +x "$VLESS_BIN"
+  echo "✅ Xray extracted and ready."
 }
 
 # ========== 生成 TUIC 配置 ==========
@@ -151,9 +170,13 @@ EOF
 # ========== 生成 VLESS Reality 配置 ==========
 generate_vless_config() {
   local shortId=$(openssl rand -hex 8)
-  local keypair=$("$VLESS_BIN" x25519)
-  local privateKey=$(echo "$keypair" | grep "Private key" | awk '{print $3}')
-  local publicKey=$(echo "$keypair" | grep "Public key" | awk '{print $3}')
+  local key_pair=$("$VLESS_BIN" x25519 2>/dev/null)
+  if [[ -z "$key_pair" ]]; then
+    echo "❌ Failed to generate X25519 key pair. Check xray binary."
+    exit 1
+  fi
+  local privateKey=$(echo "$key_pair" | grep "Private key" | awk '{print $3}')
+  local publicKey=$(echo "$key_pair" | grep "Public key" | awk '{print $3}')
 
 cat > "$VLESS_CONFIG" <<EOF
 {
@@ -216,13 +239,14 @@ EOF
 Reality Public Key: $publicKey
 Reality Short ID: $shortId
 VLESS UUID: $VLESS_UUID
-VLESS Port: $VLESS_PORT (固定服务器443端口)
+VLESS Port: $VLESS_PORT
 EOF
+  echo "✅ VLESS config generated with keys."
 }
 
 # ========== 获取公网IP ==========
 get_server_ip() {
-  curl -s --connect-timeout 3 https://api64.ipify.org || echo "127.0.0.1"
+  curl -s --connect-timeout 5 https://api64.ipify.org || echo "127.0.0.1"
 }
 
 # ========== 生成 TUIC 链接 ==========
@@ -238,6 +262,10 @@ EOF
 # ========== 生成 VLESS Reality 链接 ==========
 generate_vless_link() {
   local ip="$1"
+  if [[ ! -f "reality_info.txt" ]]; then
+    echo "❌ reality_info.txt not found. Regenerating config..."
+    generate_vless_config
+  fi
   local shortId=$(grep "Short ID" reality_info.txt | awk '{print $4}')
   local pubKey=$(grep "Public Key" reality_info.txt | awk '{print $4}')
   cat > "$VLESS_LINK_TXT" <<EOF
@@ -259,7 +287,7 @@ run_tuic_background() {
 
 # ========== 守护进程：VLESS ==========
 run_vless_background() {
-  echo "🚀 Starting VLESS Reality server on :${VLESS_PORT} (服务器443端口)..."
+  echo "🚀 Starting VLESS Reality server on :${VLESS_PORT} (ensure port 443 is free!)..."
   while true; do
     "$VLESS_BIN" run -c "$VLESS_CONFIG" >/dev/null 2>&1 || true
     echo "⚠️ VLESS crashed. Restarting in 5s..."
@@ -270,12 +298,10 @@ run_vless_background() {
 # ========== 主流程 ==========
 main() {
   echo "========================================="
-  echo "   TUIC + VLESS Reality 一键部署脚本"
-  echo "   VLESS 固定使用 443 端口"
+  echo "   TUIC + VLESS Reality (443) 一键部署脚本"
   echo "========================================="
 
   if ! load_existing_config; then
-    # 首次运行
     read_tuic_port "$@"
 
     TUIC_UUID="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen)"
@@ -288,11 +314,9 @@ main() {
     generate_tuic_config
     generate_vless_config
   else
-    # 已有配置
     generate_cert
     check_tuic_server
     check_vless_server
-    [[ ! -f "$SERVER_TOML" ]] && generate_tuic_config
     [[ ! -f "$VLESS_CONFIG" ]] && generate_vless_config
   fi
 
@@ -301,7 +325,8 @@ main() {
   generate_vless_link "$ip"
 
   echo ""
-  echo "🚀 启动服务（TUIC on :${TUIC_PORT} + VLESS on :443）..."
+  echo "🚀 启动服务（TUIC on :${TUIC_PORT}, VLESS Reality on :${VLESS_PORT}）..."
+  echo "⚠️  注意：VLESS 使用 443 端口，确保无其他服务占用（如 nginx）。若容器环境无权限，可需 cap_net_bind_service."
 
   # 并行启动
   run_tuic_background &
