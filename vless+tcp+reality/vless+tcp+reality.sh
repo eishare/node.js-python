@@ -1,19 +1,15 @@
 #!/bin/bash
 # =========================================
-# VLESS + WS + TLS（翼龙专用）
-# 内部监听 443，外部端口自动匹配
-# 证书自动生成，零依赖（无 jq）
-# 解决：端口错乱、证书只读、启动失败
+# VLESS + WS + TLS（强制使用 443 端口）
+# 翼龙面板专用：必须开放 443 端口
+# 完全忽略 3250，客户端链接使用 443
+# 零依赖，无 jq，证书自动生成
 # =========================================
 set -uo pipefail
 
-# ========== 外部端口（翼龙开放）==========
-EXTERNAL_PORT="${SERVER_PORT:-${1:-3250}}"
-echo "External port (翼龙): $EXTERNAL_PORT"
-
-# ========== 强制内部监听 443（TLS 必须）==========
-INTERNAL_PORT=443
-echo "Internal listening port: $INTERNAL_PORT"
+# ========== 强制使用 443 端口（TLS 必须）==========
+PORT=443
+echo "Using port: $PORT (TLS requires 443)"
 
 # ========== 获取服务器 IP ==========
 IP=$(curl -s https://api64.ipify.org || echo "127.0.0.1")
@@ -34,7 +30,7 @@ KEY_PEM="$CERT_DIR/privkey.pem"
 gen_cert() {
   mkdir -p "$CERT_DIR"
   if [[ ! -f "$CERT_PEM" || ! -f "$KEY_PEM" ]]; then
-    echo "Generating self-signed certificate..."
+    echo "Generating self-signed certificate for $IP..."
     openssl req -x509 -newkey rsa:2048 -keyout "$KEY_PEM" -out "$CERT_PEM" \
       -days 365 -nodes -subj "/CN=$IP" >/dev/null 2>&1
     chmod 644 "$CERT_PEM" "$KEY_PEM"
@@ -44,7 +40,7 @@ gen_cert() {
 # ========== 下载 Xray ==========
 get_xray() {
   if [[ ! -x "$VLESS_BIN" ]]; then
-    echo "Downloading Xray..."
+    echo "Downloading Xray v1.8.23..."
     curl -L -o xray.zip "https://github.com/XTLS/Xray-core/releases/download/v1.8.23/Xray-linux-64.zip" --fail --connect-timeout 15
     unzip -j xray.zip xray -d . >/dev/null 2>&1
     rm -f xray.zip
@@ -55,9 +51,19 @@ get_xray() {
 # ========== URL 编码路径（无 jq）==========
 url_encode() {
   local string="$1"
-  printf '%s' "$string" | sed -e 's/%/%25/g' -e 's/ /%20/g' -e 's/!/%21/g' -e 's/"/%22/g' \
-    -e 's/#/%23/g' -e 's/\$/%24/g' -e 's/&/%26/g' -e "s/'/%27/g" \
-    -e 's/(/%28/g' -e 's/)/%29/g' -e 's/:/%3A/g' -e 's/\[/%5B/g' -e 's/\]/%5D/g'
+  printf '%s' "$string" | sed \
+    -e 's/%/%25/g' \
+    -e 's/ /%20/g' \
+    -e 's/!/%21/g' \
+    -e 's/"/%22/g' \
+    -e 's/#/%23/g' \
+    -e 's/\$/%24/g' \
+    -e 's/&/%26/g' \
+    -e "s/'/%27/g" \
+    -e 's/(/%28/g' \
+    -e 's/)/%29/g' \
+    -e 's/\[/%5B/g' \
+    -e 's/\]/%5D/g'
 }
 
 # ========== 生成配置（监听 443）==========
@@ -66,7 +72,7 @@ gen_config() {
 {
   "log": {"loglevel": "warning"},
   "inbounds": [{
-    "port": $INTERNAL_PORT,
+    "port": $PORT,
     "protocol": "vless",
     "settings": {
       "clients": [{"id": "$VLESS_UUID"}],
@@ -93,17 +99,16 @@ gen_config() {
 EOF
 }
 
-# ========== 生成客户端链接（外部端口）==========
+# ========== 生成客户端链接（使用 443）==========
 gen_link() {
   local encoded_path=$(url_encode "$WS_PATH")
   cat > "$VLESS_LINK" <<EOF
-vless://$VLESS_UUID@$IP:$EXTERNAL_PORT?encryption=none&security=tls&type=ws&host=$IP&path=$encoded_path#VLESS-WS-3250
+vless://$VLESS_UUID@$IP:$PORT?encryption=none&security=tls&type=ws&host=$IP&path=$encoded_path#VLESS-WS-443
 EOF
 
   echo "========================================="
   echo "VLESS + WS + TLS 部署成功！"
-  echo "外部端口: $EXTERNAL_PORT"
-  echo "内部端口: $INTERNAL_PORT"
+  echo "端口: $PORT"
   echo "IP: $IP"
   echo "WS Path: $WS_PATH"
   echo ""
@@ -111,14 +116,14 @@ EOF
   cat "$VLESS_LINK"
   echo ""
   echo "翼龙面板设置："
-  echo "  端口: $EXTERNAL_PORT (TCP)"
-  echo "  映射: $EXTERNAL_PORT → $INTERNAL_PORT"
+  echo "  端口: 443 (TCP)"
+  echo "  启动命令: ./deploy.sh"
   echo "========================================="
 }
 
 # ========== 启动 ==========
 run_vless() {
-  echo "Starting Xray on :$INTERNAL_PORT..."
+  echo "Starting Xray on :$PORT..."
   exec "$VLESS_BIN" run -c "$VLESS_CONFIG"
 }
 
