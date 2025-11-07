@@ -7,18 +7,10 @@
   "scripts": {
     "start": "node node.js"
   },
-  "keywords": [
-    "tuic",
-    "quic",
-    "vpn",
-    "deploy",
-    "nodejs",
-    "no-root"
-  ],
+  "keywords": ["tuic", "quic", "vpn", "deploy", "nodejs", "no-root"],
   "author": "eishare",
   "license": "MIT",
   "engines": {
     "node": ">=18"
-  },
-  "dependencies": {}
+  }
 }
