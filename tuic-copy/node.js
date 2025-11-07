@@ -2,7 +2,15 @@
 /**
  * =========================================
  * TUIC v5 over QUIC 自动部署脚本（Node.js 版）
- * 定时重启：每天北京时间 00:00（即 24:00）
+ * 定时重启：每天北京时间 00:00（24:00）
+ * 
+ * 【UUID 已手动设置！请修改下方双引号内的值】
+ * 
+ *    const UUID = "在这里填入您的UUID";
+ * 
+ *    示例：const UUID = "fdeeda45-0a8e-4570-bcc6-d68c995f5830";
+ * 
+ *    每次部署前请务必修改此值！
  * =========================================
  */
 import { execSync, spawn } from "child_process";
@@ -10,15 +18,27 @@ import fs from "fs";
 import https from "https";
 import crypto from "crypto";
 
+// ================== 【手动设置 UUID】==================
+// 请将下方双引号内的值替换为您的 UUID
+const UUID = "fdeeda45-0a8e-4570-bcc6-d68c995f5830";  // 修改这里！
+
+// 格式校验（防止错误）
+if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(UUID)) {
+  console.error("\nUUID 格式错误！");
+  console.error("正确格式示例: fdeeda45-0a8e-4570-bcc6-d68c995f5830");
+  console.error("当前值: " + UUID);
+  process.exit(1);
+}
+console.log(`使用手动设置的 UUID: ${UUID}`);
+
 // ================== 内置定时器（北京时间 00:00 重启）==================
 function scheduleBeijingTimeMidnight(callback) {
   const now = new Date();
   const beijingNow = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Shanghai" }));
   
   let target = new Date(beijingNow);
-  target.setHours(0, 0, 0, 0);  // 00:00:00
+  target.setHours(0, 0, 0, 0);
 
-  // 如果已经过了 00:00，设置到明天
   if (beijingNow.getTime() >= target.getTime()) {
     target.setDate(target.getDate() + 1);
   }
@@ -29,7 +49,7 @@ function scheduleBeijingTimeMidnight(callback) {
   setTimeout(() => {
     console.log(`[Timer] 北京时间 00:00 重启触发于 ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`);
     callback();
-    scheduleBeijingTimeMidnight(callback); // 重新调度明天
+    scheduleBeijingTimeMidnight(callback);
   }, delay);
 }
 
@@ -45,7 +65,6 @@ const TUIC_BIN = "./tuic-server";
 const randomPort = () => Math.floor(Math.random() * 40000) + 20000;
 const randomSNI = () => MASQ_DOMAINS[Math.floor(Math.random() * MASQ_DOMAINS.length)];
 const randomHex = (len = 16) => crypto.randomBytes(len).toString("hex");
-const uuid = () => crypto.randomUUID();
 function fileExists(p) { return fs.existsSync(p); }
 function execSafe(cmd) {
   try { return execSync(cmd, { encoding: "utf8", stdio: "pipe" }).trim(); }
@@ -60,7 +79,6 @@ async function getPublicIP() {
     "https://icanhazip.com",
     "https://ipinfo.io/ip"
   ];
-
   for (const url of sources) {
     try {
       const ip = await new Promise((resolve, reject) => {
@@ -72,8 +90,6 @@ async function getPublicIP() {
         req.on("error", reject);
         req.setTimeout(3000, () => req.destroy());
       });
-
-      // 过滤私有 IP
       if (ip && !/^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.|127\.|169\.254\.)/.test(ip)) {
         console.log(`公网 IP: ${ip}`);
         return ip;
@@ -104,13 +120,8 @@ async function downloadFile(url, dest, redirectCount = 0) {
   });
 }
 
-// ================== 读取端口 ==================
+// ================== 读取端口（仅随机或环境变量）=================
 function readPort() {
-  const argPort = process.argv[2];
-  if (argPort && !isNaN(argPort)) {
-    console.log(`Using CLI port: ${argPort}`);
-    return Number(argPort);
-  }
   if (process.env.SERVER_PORT && !isNaN(process.env.SERVER_PORT)) {
     console.log(`Using env port: ${process.env.SERVER_PORT}`);
     return Number(process.env.SERVER_PORT);
@@ -214,7 +225,7 @@ function runLoop() {
 async function main() {
   console.log("TUIC v5 over QUIC 自动部署开始");
 
-  // 1. 启动定时重启（北京时间 00:00）
+  // 1. 启动定时重启
   scheduleBeijingTimeMidnight(() => {
     process.exit(0);
   });
@@ -222,14 +233,13 @@ async function main() {
   // 2. 部署逻辑
   const port = readPort();
   const domain = randomSNI();
-  const id = uuid();
   const password = randomHex(16);
 
   generateCert(domain);
   await checkTuicServer();
-  generateConfig(id, password, port, domain);
+  generateConfig(UUID, password, port, domain);
   const ip = await getPublicIP();
-  generateLink(id, password, ip, port, domain);
+  generateLink(UUID, password, ip, port, domain);
   runLoop();
 }
 
