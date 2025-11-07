@@ -6,7 +6,7 @@
  * 
  * 【UUID 已手动设置！请修改下方双引号内的值】
  * 
- *    const UUID = "在这里填入您的UUID";
+ *    const UUID = "43622c18-0b6d-48c8-ba22-56b23b2fe2b2";
  * 
  *    示例：const UUID = "fdeeda45-0a8e-4570-bcc6-d68c995f5830";
  * 
