@@ -15,7 +15,9 @@ curl -Ls https://raw.githubusercontent.com/eishare/tuic-hy2-node.js-python/main/
 
 # 2.TUIC在Nodejs/Python一键脚本极简部署（Pterodactyl 翼龙面板）
 
-* 更新自适应端口，无需再手动设置
+# 更新每日零时重启-清空缓存，避免内存溢出导致停机
+
+* 自适应端口，无需再手动设置
 
 * TUIC版本：1.4.5 官方更新说明（原文直译）：
 
