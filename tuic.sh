@@ -19,28 +19,6 @@ random_port() {
   echo $(( (RANDOM % 40000) + 20000 ))
 }
 
-# ========== 永久固定 UUID & 密码 ==========
-UUID_FILE="${HOME}/tuic_data/uuid.txt"
-PASS_FILE="${HOME}/tuic_data/pass.txt"
-
-mkdir -p "$(dirname "$UUID_FILE")"
-
-if [[ -f "$UUID_FILE" && -s "$UUID_FILE" ]]; then
-  TUIC_UUID=$(cat "$UUID_FILE")
-else
-  TUIC_UUID="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen)"
-  echo "$TUIC_UUID" > "$UUID_FILE"
-fi
-
-if [[ -f "$PASS_FILE" && -s "$PASS_FILE" ]]; then
-  TUIC_PASSWORD=$(cat "$PASS_FILE")
-else
-  TUIC_PASSWORD="$(openssl rand -hex 16)"
-  echo "$TUIC_PASSWORD" > "$PASS_FILE"
-fi
-
-echo "🆔 使用固定 UUID: $TUIC_UUID"
-
 # ========== 选择端口 ==========
 read_port() {
   if [[ $# -ge 1 && -n "${1:-}" ]]; then
@@ -183,27 +161,7 @@ main() {
   run_background_loop
 }
 
-# ================== 无 root 定时自动重启（每日北京时间 00:00） ==================
-schedule_restart() {
-  (
-    while true; do
-      # 获取北京时间小时和分钟
-      now_hour=$(TZ='Asia/Shanghai' date +%H)
-      now_min=$(TZ='Asia/Shanghai' date +%M)
-
-      if [[ "$now_hour" -eq 0 && "$now_min" -eq 0 ]]; then
-        echo "[定时重启] 到达北京时间 00:00，准备重启 TUIC 服务..."
-        pkill -f "$TUIC_BIN" || true
-        sleep 2
-        nohup bash "$0" > /dev/null 2>&1 &
-        exit 0
-      fi
-
-      sleep 60  # 每分钟检测一次
-    done
-  ) &
-}
-
 main "$@"
+
 
 
