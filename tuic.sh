@@ -1,9 +1,8 @@
 #!/bin/bash
 # =========================================
 # TUIC v1.4.5 over QUIC 自动部署脚本（免 root）
-# 固定 SNI：www.bing.com
+# 固定 SNI：www.bing.com，
 # =========================================
-
 set -euo pipefail
 export LC_ALL=C
 IFS=$'\n\t'
@@ -56,11 +55,9 @@ generate_cert() {
     echo "🔐 Certificate exists, skipping."
     return
   fi
-
   echo "🔐 Generating self-signed certificate for ${MASQ_DOMAIN}..."
   openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
     -keyout "$KEY_PEM" -out "$CERT_PEM" -subj "/CN=${MASQ_DOMAIN}" -days 365 -nodes >/dev/null 2>&1
-
   chmod 600 "$KEY_PEM"
   chmod 644 "$CERT_PEM"
 }
@@ -71,7 +68,6 @@ check_tuic_server() {
     echo "✅ tuic-server already exists."
     return
   fi
-
   echo "📥 Downloading tuic-server..."
   curl -L -o "$TUIC_BIN" "https://github.com/Itsusinn/tuic/releases/download/v1.4.5/tuic-server-x86_64-linux"
   chmod +x "$TUIC_BIN"
@@ -79,7 +75,7 @@ check_tuic_server() {
 
 # ========== 生成配置 ==========
 generate_config() {
-  cat > "$SERVER_TOML" <<EOF
+cat > "$SERVER_TOML" <<EOF
 log_level = "warn"
 server = "0.0.0.0:${TUIC_PORT}"
 
@@ -125,14 +121,13 @@ get_server_ip() {
   curl -s --connect-timeout 3 https://api64.ipify.org || echo "127.0.0.1"
 }
 
-# ========== 生成 TUIC 链接 ==========
+# ========== 生成TUIC链接 ==========
 generate_link() {
   local ip="$1"
-
+  # 节点输出链接
   cat > "$LINK_TXT" <<EOF
 tuic://${TUIC_UUID}:${TUIC_PASSWORD}@${ip}:${TUIC_PORT}?congestion_control=bbr&alpn=h3&allowInsecure=1&sni=${MASQ_DOMAIN}&udp_relay_mode=native&disable_sni=0&reduce_rtt=1&max_udp_relay_packet_size=8192#TUIC-${ip}
 EOF
-
   echo "🔗 TUIC link generated successfully:"
   cat "$LINK_TXT"
 }
