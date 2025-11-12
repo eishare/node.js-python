@@ -118,8 +118,8 @@ print_connection_info() {
     echo "   🔌 端口: $SERVER_PORT"
     echo "   🔑 密码: $AUTH_PASSWORD"
     echo ""
-    echo "📱 节点链接（SNI=${SNI}, ALPN=${ALPN}）:"
-    echo "hysteria2://${AUTH_PASSWORD}@${IP}:${SERVER_PORT}?sni=${SNI}&alpn=${ALPN}#Hy2-Bing"
+    echo "📱 节点链接（SNI=${SNI}, ALPN=${ALPN}）, 跳过证书验证）:"
+    echo "hysteria2://${AUTH_PASSWORD}@${IP}:${SERVER_PORT}?sni=${SNI}&alpn=${ALPN}#&insecure=1#Hy2-Bing"
     echo ""
     echo "📄 客户端配置文件:"
     echo "server: ${IP}:${SERVER_PORT}"
@@ -147,5 +147,6 @@ main() {
 }
 
 main "$@"
+
 
 
